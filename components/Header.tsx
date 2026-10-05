@@ -1,0 +1,189 @@
+'use client';
+
+import React, { useMemo } from 'react';
+import { RotateCw, Menu } from 'lucide-react';
+import { ViewMode, LancamentoTesouraria } from '@/lib/types';
+
+interface HeaderProps {
+  currentView: ViewMode;
+  anoSelecionado: number | string;
+  onSelectAno: (ano: number | string) => void;
+  lancamentos?: LancamentoTesouraria[];
+  onRefresh: () => void;
+  isRefreshing: boolean;
+  onToggleMobileMenu?: () => void;
+  mesSelecionado?: string;
+  onSelectMes?: (mes: string) => void;
+  setorSelecionado?: string;
+  onSelectSetor?: (setor: string) => void;
+  setoresDisponiveis?: string[];
+  onShowToast?: (msg: string) => void;
+}
+
+const MESES_HEADER = [
+  { valor: 'todos', label: 'Todos os Meses' },
+  { valor: '1', label: 'Janeiro' },
+  { valor: '2', label: 'Fevereiro' },
+  { valor: '3', label: 'Março' },
+  { valor: '4', label: 'Abril' },
+  { valor: '5', label: 'Maio' },
+  { valor: '6', label: 'Junho' },
+  { valor: '7', label: 'Julho' },
+  { valor: '8', label: 'Agosto' },
+  { valor: '9', label: 'Setembro' },
+  { valor: '10', label: 'Outubro' },
+  { valor: '11', label: 'Novembro' },
+  { valor: '12', label: 'Dezembro' },
+];
+
+export const Header: React.FC<HeaderProps> = ({
+  currentView,
+  anoSelecionado,
+  onSelectAno,
+  lancamentos = [],
+  onRefresh,
+  isRefreshing,
+  onToggleMobileMenu,
+  mesSelecionado,
+  onSelectMes,
+  setorSelecionado,
+  onSelectSetor,
+  setoresDisponiveis = [],
+  onShowToast,
+}) => {
+  const anosDisponiveis = useMemo(() => {
+    const anosSet = new Set<number>();
+    const anoAtualReal = new Date().getFullYear();
+    anosSet.add(anoAtualReal);
+    lancamentos.forEach((l) => {
+      if (l.ano && typeof l.ano === 'number' && l.ano > 2000) {
+        anosSet.add(l.ano);
+      }
+    });
+    return Array.from(anosSet).sort((a, b) => b - a);
+  }, [lancamentos]);
+
+  const getTitle = () => {
+    switch (currentView) {
+      case 'dashboard':
+        return 'DashBoard | Ofertas Célula';
+      case 'relacao-envelopes':
+        return 'Relação de Envelopes';
+      case 'validar-relatorios':
+        return 'Validar Entrega de Envelope';
+      case 'permissoes':
+        return 'Permissões de Acesso ao App';
+      default:
+        return 'Tesouraria AppChurch';
+    }
+  };
+
+  return (
+    <>
+      <header className="bg-[#1c2030] text-slate-100 px-3.5 sm:px-6 py-3 border-b border-[#2a2f48] flex flex-wrap items-center justify-between gap-2.5">
+        <div className="flex items-center gap-2.5">
+          {onToggleMobileMenu && (
+            <button
+              onClick={onToggleMobileMenu}
+              className="md:hidden p-1.5 -ml-1 rounded-lg text-slate-300 hover:text-white hover:bg-[#282e48] transition-colors cursor-pointer"
+              aria-label="Menu"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
+          )}
+          <div>
+            <p className="text-[11px] sm:text-xs text-slate-400 font-medium">
+              Tesouraria Geral
+            </p>
+            <div className="flex items-center gap-2">
+              <h2 className="text-base sm:text-xl font-bold tracking-tight text-white flex items-center gap-2">
+                {getTitle()}
+              </h2>
+            </div>
+          </div>
+        </div>
+
+        {/* Right Controls */}
+        <div className="flex items-center flex-wrap gap-2 ml-auto">
+          {/* Filters for Relação Envelopes */}
+          {currentView === 'relacao-envelopes' && (
+            <>
+              {/* 1. Ano */}
+              <div className="flex items-center gap-1 bg-[#252a40] px-2.5 py-1 rounded-lg border border-[#394164]">
+                <label className="text-xs text-slate-300 font-medium">Ano:</label>
+                <select
+                  value={anoSelecionado}
+                  onChange={(e) =>
+                    onSelectAno(e.target.value === 'todos' ? 'todos' : Number(e.target.value))
+                  }
+                  className="bg-transparent text-xs font-bold text-white focus:outline-none cursor-pointer"
+                >
+                  <option value="todos" className="bg-[#1c2030] text-white">
+                    Todos os Anos
+                  </option>
+                  {anosDisponiveis.map((ano) => (
+                    <option key={ano} value={ano} className="bg-[#1c2030] text-white">
+                      {ano}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* 2. Mês */}
+              {mesSelecionado && onSelectMes && (
+                <div className="flex items-center gap-1 bg-[#252a40] px-2.5 py-1 rounded-lg border border-[#394164]">
+                  <label className="text-xs text-slate-300 font-medium">Mês:</label>
+                  <select
+                    value={mesSelecionado}
+                    onChange={(e) => onSelectMes(e.target.value)}
+                    className="bg-transparent text-xs font-bold text-white focus:outline-none cursor-pointer"
+                  >
+                    {MESES_HEADER.map((m) => (
+                      <option key={m.valor} value={m.valor} className="bg-[#1c2030] text-white">
+                        {m.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {/* 3. Setor */}
+              {setorSelecionado && onSelectSetor && (
+                <div className="flex items-center gap-1 bg-[#252a40] px-2.5 py-1 rounded-lg border border-[#394164]">
+                  <label className="text-xs text-slate-300 font-medium">Setor:</label>
+                  <select
+                    value={setorSelecionado}
+                    onChange={(e) => onSelectSetor(e.target.value)}
+                    className="bg-white text-xs font-bold text-slate-900 px-1.5 py-0.5 rounded focus:outline-none cursor-pointer shadow-xs"
+                  >
+                    <option value="todos">Todos os Setores</option>
+                    {(setoresDisponiveis.length > 0
+                      ? setoresDisponiveis
+                      : ['Safira', 'Fire', 'White', 'Azul', 'Amarelo', 'Black', 'Diamante', 'Legacy', 'Onix', 'Titanium']
+                    )
+                      .filter((s) => s.toLowerCase() !== 'todos')
+                      .map((s) => (
+                        <option key={s} value={s}>
+                          {s}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* Refresh Sync Button */}
+          <button
+            onClick={onRefresh}
+            disabled={isRefreshing}
+            className="p-2 rounded-lg bg-[#252a40] hover:bg-[#313754] text-slate-300 hover:text-white border border-[#394164] transition-colors cursor-pointer"
+            title="Sincronizar com o banco Supabase"
+          >
+            <RotateCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-indigo-400' : ''}`} />
+          </button>
+        </div>
+      </header>
+    </>
+  );
+};
