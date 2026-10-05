@@ -53,15 +53,46 @@ export const Header: React.FC<HeaderProps> = ({
 }) => {
   const anosDisponiveis = useMemo(() => {
     const anosSet = new Set<number>();
-    const anoAtualReal = new Date().getFullYear();
-    anosSet.add(anoAtualReal);
     lancamentos.forEach((l) => {
-      if (l.ano && typeof l.ano === 'number' && l.ano > 2000) {
-        anosSet.add(l.ano);
+      let a = l.ano;
+      if (!a && l.dataBR) {
+        const parts = l.dataBR.split('/');
+        if (parts.length === 3) {
+          const parsed = parseInt(parts[2], 10);
+          if (!isNaN(parsed) && parsed > 2000) a = parsed;
+        }
+      } else if (!a && l.data) {
+        const parsed = new Date(l.data).getFullYear();
+        if (!isNaN(parsed) && parsed > 2000) a = parsed;
+      }
+      if (a && typeof a === 'number' && a > 2000 && !isNaN(a)) {
+        anosSet.add(a);
       }
     });
+
+    if (anosSet.size === 0) {
+      anosSet.add(new Date().getFullYear());
+    }
     return Array.from(anosSet).sort((a, b) => b - a);
   }, [lancamentos]);
+
+  // Se for o ano atual, exibe apenas até o mês mais recente (mês atual)
+  const mesesDisponiveis = useMemo(() => {
+    const hoje = new Date();
+    const anoAtual = hoje.getFullYear();
+    const mesAtual = hoje.getMonth() + 1;
+
+    const isAnoAtual =
+      anoSelecionado === 'todos' ||
+      Number(anoSelecionado) === anoAtual ||
+      String(anoSelecionado) === String(anoAtual);
+
+    if (isAnoAtual) {
+      return MESES_HEADER.filter((m) => m.valor === 'todos' || Number(m.valor) <= mesAtual);
+    }
+
+    return MESES_HEADER;
+  }, [anoSelecionado]);
 
   const getTitle = () => {
     switch (currentView) {
@@ -138,7 +169,7 @@ export const Header: React.FC<HeaderProps> = ({
                     onChange={(e) => onSelectMes(e.target.value)}
                     className="bg-transparent text-xs font-bold text-white focus:outline-none cursor-pointer"
                   >
-                    {MESES_HEADER.map((m) => (
+                    {mesesDisponiveis.map((m) => (
                       <option key={m.valor} value={m.valor} className="bg-[#1c2030] text-white">
                         {m.label}
                       </option>

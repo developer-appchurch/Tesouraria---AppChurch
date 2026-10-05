@@ -8,6 +8,7 @@ import { ValidarRelatoriosView } from '@/components/views/ValidarRelatoriosView'
 import { RelacaoEnvelopesView } from '@/components/views/RelacaoEnvelopesView';
 import { DashboardView } from '@/components/views/DashboardView';
 import { PermissoesView } from '@/components/views/PermissoesView';
+import { LoadingScreen } from '@/components/LoadingScreen';
 import { TreasuryService } from '@/lib/treasury-service';
 import { ViewMode, LancamentoTesouraria, PermissaoUsuario, MembroItem } from '@/lib/types';
 
@@ -38,7 +39,7 @@ export default function TreasuryApp() {
   const [isLoggedOut, setIsLoggedOut] = useState<boolean>(false);
   const [currentView, setCurrentView] = useState<ViewMode>('validar-relatorios');
 
-  // Relatórios obtidos diretamente do banco de dados Supabase
+  const [isInitialLoading, setIsInitialLoading] = useState<boolean>(true);
   const [lancamentos, setLancamentos] = useState<LancamentoTesouraria[]>([]);
   const [usuarios, setUsuarios] = useState<PermissaoUsuario[]>([]);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
@@ -97,6 +98,10 @@ export default function TreasuryApp() {
         }
       } catch (err) {
         console.warn('Erro ao carregar dados do Supabase:', err);
+      } finally {
+        if (isSubscribed) {
+          setIsInitialLoading(false);
+        }
       }
     };
 
@@ -188,6 +193,11 @@ export default function TreasuryApp() {
     : currentView === 'login'
     ? 'validar-relatorios'
     : currentView;
+
+  // Render Loading Screen enquanto carrega dados do Supabase
+  if (isInitialLoading) {
+    return <LoadingScreen mensagem="Carregando dados do Supabase..." subtexto="Sincronizando relatórios e permissões da igreja..." />;
+  }
 
   // Render Login View if not logged in
   if (viewEfetiva === 'login') {

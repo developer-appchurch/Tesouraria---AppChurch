@@ -1,7 +1,8 @@
 'use client';
 
 import React, { useState } from 'react';
-import { RefreshCw, CheckCircle2, AlertCircle, Church } from 'lucide-react';
+import Image from 'next/image';
+import { RefreshCw, CheckCircle2, AlertCircle } from 'lucide-react';
 import { MembroItem } from '@/lib/types';
 import { TreasuryService } from '@/lib/treasury-service';
 
@@ -78,15 +79,20 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
         id="login-card"
         className="bg-white rounded-2xl p-6 sm:p-7 w-full max-w-[400px] shadow-2xl animate-in zoom-in-95 duration-200 text-center relative"
       >
-        {/* Brand Header */}
+        {/* Brand Header com Imagem da Logo Escura oficial */}
         <div className="flex flex-col items-center justify-center mb-6">
-          <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-[#1c2030] to-[#2e3752] flex items-center justify-center text-white shadow-lg mb-2">
-            <Church className="w-7 h-7 text-indigo-400" />
+          <div className="w-full flex justify-center mb-1">
+            <Image
+              src="/logo-appchurch-escura.png"
+              alt="AppChurch"
+              width={180}
+              height={70}
+              className="w-36 sm:w-40 max-w-[170px] h-auto object-contain mx-auto select-none"
+              priority
+              referrerPolicy="no-referrer"
+            />
           </div>
-          <h1 className="text-2xl font-black text-[#242a42] tracking-tight mb-0.5">
-            AppChurch
-          </h1>
-          <p className="text-xs font-semibold text-slate-500 leading-tight">
+          <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
             ADM Tesouraria
           </p>
         </div>

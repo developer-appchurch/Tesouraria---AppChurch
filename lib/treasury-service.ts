@@ -106,17 +106,10 @@ export function converterItemParaLancamento(item: any, idx = 0): LancamentoTesou
     (valorPix + valorEspecie)
   );
 
-  // Status & Validation from Supabase columns (tesouraria_recebido / data_recebimento / tesoureiro_id)
-  let isConfirmado = false;
-  if (item.tesouraria_recebido !== undefined && item.tesouraria_recebido !== null) {
-    isConfirmado = Boolean(item.tesouraria_recebido);
-  } else if (item.data_recebimento || item.tesoureiro_id) {
-    isConfirmado = true;
-  } else if (item.TESOURARIA_RECEB !== undefined && item.TESOURARIA_RECEB !== null) {
-    isConfirmado = Boolean(item.TESOURARIA_RECEB);
-  } else if (item.status === 'validado' || item.status === 'CONFIRMADO') {
-    isConfirmado = true;
-  }
+  // Status & Validation directly based on column tesouraria_recebido:
+  // TRUE = VALIDADO / CONFIRMADO
+  // FALSE / NULL = PENDENTE
+  const isConfirmado = item.tesouraria_recebido === true;
 
   const dataTesouraria = item.data_recebimento 
     ? formatarDataBR(item.data_recebimento) 
@@ -236,6 +229,23 @@ export function converterItemParaLancamento(item: any, idx = 0): LancamentoTesou
     Criancas: Number(item.qtd_criancas || item.Criancas || 0),
     observacoes: rawObs,
   };
+}
+
+async function callTreasuryApi(action: string, params: any = {}): Promise<any> {
+  if (typeof window === 'undefined') return null;
+  try {
+    const res = await fetch('/api/treasury', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, params }),
+    });
+    if (res.ok) {
+      return await res.json();
+    }
+  } catch (e) {
+    console.warn('[callTreasuryApi] Falha na chamada da API:', e);
+  }
+  return null;
 }
 
 export const TreasuryService = {
@@ -425,7 +435,8 @@ export const TreasuryService = {
         .select(
           'id, igreja_id, data_relatorio, numero_semana, valor_pix, valor_especie, observacao, qtd_membros, qtd_criancas, data_recebimento, tesoureiro_id, tesouraria_recebido, criado_em, atualizado_em'
         )
-        .order('data_relatorio', { ascending: false });
+        .order('data_relatorio', { ascending: false })
+        .limit(10000);
 
       if (error) {
         console.warn('Aviso ao consultar relatorios_semanais no Supabase:', error.message);
@@ -462,32 +473,76 @@ export const TreasuryService = {
     isAuthError?: boolean;
   }> {
     try {
-      const supabase = getSupabaseClient();
-      const pAno = Number(ano) || new Date().getFullYear();
-      const pMes = mes !== null && mes !== undefined && mes !== 'todos' && mes !== '' ? Number(mes) : null;
-
-      const { data, error } = await supabase.rpc('tesouraria_setores_pendencias', {
-        p_ano: pAno,
-        p_mes: pMes,
-      });
-
-      if (error) {
-        console.warn('Aviso RPC tesouraria_setores_pendencias:', error.message);
-        const isAuth =
-          error.code === '42501' ||
-          error.code === 'PGRST301' ||
-          error.message?.toLowerCase().includes('permission') ||
-          error.message?.toLowerCase().includes('jwt');
-        return { success: false, data: [], error: error.message, isAuthError: isAuth };
+      const apiRes = await callTreasuryApi('setores_pendencias', { ano, mes });
+      if (apiRes && apiRes.success && Array.isArray(apiRes.data)) {
+        return { success: true, data: apiRes.data };
       }
 
-      const list = Array.isArray(data)
-        ? data.map((item: any) => ({
+      const supabase = getSupabaseClient();
+      const isTodosAnos = String(ano).toLowerCase() === 'todos' || String(ano).toLowerCase() === 'todos os anos';
+      const pAno = isTodosAnos ? null : Number(ano) || new Date().getFullYear();
+      const pMes = mes !== null && mes !== undefined && mes !== 'todos' && mes !== '' ? Number(mes) : null;
+
+      if (!isTodosAnos) {
+        const { data, error } = await supabase.rpc('tesouraria_setores_pendencias', {
+          p_ano: pAno,
+          p_mes: pMes,
+        });
+
+        if (!error && Array.isArray(data) && data.length > 0) {
+          const list = data.map((item: any) => ({
             setor_id: String(item.setor_id || item.id || ''),
             setor_nome: String(item.setor_nome || item.nome || item.setor || 'Setor').trim(),
             qtd_pendentes: Number(item.qtd_pendentes ?? item.pendentes ?? 0),
-          }))
-        : [];
+          }));
+          return { success: true, data: list };
+        }
+      }
+
+      // Cálculo direto no banco para suportar todos os anos
+      const { data: allRows } = await supabase
+        .from('relatorios_semanais')
+        .select('id, data_relatorio, tesouraria_recebido, observacao')
+        .limit(10000);
+
+      const setoresMap = new Map<string, number>();
+      const setoresPadrao = ['Safira', 'Fire', 'White', 'Black', 'Azul', 'Amarelo', 'Legacy', 'Onix', 'Diamante', 'Titanium'];
+      setoresPadrao.forEach((s) => setoresMap.set(s, 0));
+
+      if (allRows && Array.isArray(allRows)) {
+        allRows.forEach((r: any) => {
+          let itemAno = new Date().getFullYear();
+          let itemMes = new Date().getMonth() + 1;
+          if (r.data_relatorio) {
+            const clean = String(r.data_relatorio).split('T')[0];
+            const parts = clean.split('-');
+            if (parts.length === 3) {
+              itemAno = parseInt(parts[0], 10);
+              itemMes = parseInt(parts[1], 10);
+            }
+          }
+
+          if (!isTodosAnos && pAno !== null && itemAno !== pAno) return;
+          if (pMes !== null && itemMes !== pMes) return;
+
+          // Contabiliza apenas pendentes (tesouraria_recebido !== true)
+          if (r.tesouraria_recebido !== true) {
+            let setor = 'Safira';
+            const obs = String(r.observacao || '');
+            if (obs.toLowerCase().includes('setor:')) {
+              const match = obs.match(/setor:\s*([^|]+)/i);
+              if (match) setor = match[1].trim();
+            }
+            setoresMap.set(setor, (setoresMap.get(setor) || 0) + 1);
+          }
+        });
+      }
+
+      const list = Array.from(setoresMap.entries()).map(([nome, qtd]) => ({
+        setor_id: nome,
+        setor_nome: nome,
+        qtd_pendentes: qtd,
+      }));
 
       return { success: true, data: list };
     } catch (err: any) {
@@ -499,6 +554,7 @@ export const TreasuryService = {
   /**
    * RPC 2: tesouraria_relatorios_detalhados
    * Retorna os relatórios detalhados da igreja para a tabela principal
+   * Busca no banco inteiro (limit 10000) e valida exclusivamente via tesouraria_recebido === true
    */
   async rpcTesourariaRelatoriosDetalhados(
     ano: number | string,
@@ -524,31 +580,78 @@ export const TreasuryService = {
     isAuthError?: boolean;
   }> {
     try {
+      const apiRes = await callTreasuryApi('relatorios_detalhados', {
+        ano,
+        mes,
+        setorId,
+        somentePendentes,
+      });
+      if (apiRes && apiRes.success && Array.isArray(apiRes.data)) {
+        return { success: true, data: apiRes.data };
+      }
+
       const supabase = getSupabaseClient();
-      const pAno = Number(ano) || new Date().getFullYear();
+      const isTodosAnos = String(ano).toLowerCase() === 'todos' || String(ano).toLowerCase() === 'todos os anos';
+      const pAno = isTodosAnos ? null : Number(ano) || new Date().getFullYear();
       const pMes = mes !== null && mes !== undefined && mes !== 'todos' && mes !== '' ? Number(mes) : null;
       const pSetorId = setorId && setorId !== 'todos' ? String(setorId) : null;
       const pSomentePendentes = typeof somentePendentes === 'boolean' ? somentePendentes : null;
 
-      const { data, error } = await supabase.rpc('tesouraria_relatorios_detalhados', {
-        p_ano: pAno,
-        p_mes: pMes,
-        p_setor_id: pSetorId,
-        p_somente_pendentes: pSomentePendentes,
-      });
+      // 1. Tenta RPC
+      let rpcList: any[] = [];
+      let rpcSuccess = false;
+      if (!isTodosAnos) {
+        try {
+          const { data, error } = await supabase.rpc('tesouraria_relatorios_detalhados', {
+            p_ano: pAno,
+            p_mes: pMes,
+            p_setor_id: pSetorId,
+            p_somente_pendentes: pSomentePendentes,
+          });
 
-      if (error) {
-        console.warn('Aviso RPC tesouraria_relatorios_detalhados:', error.message);
-        const isAuth =
-          error.code === '42501' ||
-          error.code === 'PGRST301' ||
-          error.message?.toLowerCase().includes('permission') ||
-          error.message?.toLowerCase().includes('jwt');
-        return { success: false, data: [], error: error.message, isAuthError: isAuth };
+          if (!error && Array.isArray(data)) {
+            rpcList = data;
+            rpcSuccess = true;
+          }
+        } catch {}
       }
 
-      const list = Array.isArray(data)
-        ? data.map((item: any) => ({
+      // Se a RPC retornou mais de 100 registros (sem limite truncado)
+      if (rpcSuccess && rpcList.length > 100) {
+        const list = rpcList.map((item: any) => ({
+          id: String(item.id),
+          unidade_id: item.unidade_id ? String(item.unidade_id) : undefined,
+          celula_nome: String(item.celula_nome || 'Célula').trim(),
+          lideres: String(item.lideres || '-').trim(),
+          data_relatorio: item.data_relatorio || '',
+          valor_pix: Number(item.valor_pix ?? 0),
+          valor_especie: Number(item.valor_especie ?? 0),
+          tesouraria_recebido: item.tesouraria_recebido === true,
+          data_recebimento: item.data_recebimento || null,
+          tesoureiro_id: item.tesoureiro_id || null,
+          nome_tesoureiro: item.nome_tesoureiro || null,
+        }));
+        return { success: true, data: list };
+      }
+
+      // 2. Consulta direta à tabela relatorios_semanais para buscar no BANCO INTEIRO (sem limite de 100)
+      let query = supabase
+        .from('relatorios_semanais')
+        .select('id, igreja_id, data_relatorio, numero_semana, valor_pix, valor_especie, observacao, data_recebimento, tesoureiro_id, tesouraria_recebido, criado_em')
+        .order('data_relatorio', { ascending: false })
+        .limit(10000);
+
+      if (pSomentePendentes === true) {
+        query = query.or('tesouraria_recebido.eq.false,tesouraria_recebido.is.null');
+      } else if (pSomentePendentes === false) {
+        query = query.eq('tesouraria_recebido', true);
+      }
+
+      const { data, error } = await query;
+
+      if (error) {
+        if (rpcSuccess) {
+          const list = rpcList.map((item: any) => ({
             id: String(item.id),
             unidade_id: item.unidade_id ? String(item.unidade_id) : undefined,
             celula_nome: String(item.celula_nome || 'Célula').trim(),
@@ -556,16 +659,60 @@ export const TreasuryService = {
             data_relatorio: item.data_relatorio || '',
             valor_pix: Number(item.valor_pix ?? 0),
             valor_especie: Number(item.valor_especie ?? 0),
-            tesouraria_recebido: Boolean(item.tesouraria_recebido),
+            tesouraria_recebido: item.tesouraria_recebido === true,
             data_recebimento: item.data_recebimento || null,
             tesoureiro_id: item.tesoureiro_id || null,
             nome_tesoureiro: item.nome_tesoureiro || null,
-          }))
-        : [];
+          }));
+          return { success: true, data: list };
+        }
+        return { success: false, data: [], error: error.message };
+      }
 
-      return { success: true, data: list };
+      if (data && Array.isArray(data)) {
+        let itemsFiltrados = data;
+
+        // Filtro por Ano / Mês
+        itemsFiltrados = itemsFiltrados.filter((item: any) => {
+          let itemAno = new Date().getFullYear();
+          let itemMes = new Date().getMonth() + 1;
+          if (item.data_relatorio) {
+            const clean = String(item.data_relatorio).split('T')[0];
+            const parts = clean.split('-');
+            if (parts.length === 3) {
+              itemAno = parseInt(parts[0], 10);
+              itemMes = parseInt(parts[1], 10);
+            }
+          }
+
+          if (!isTodosAnos && pAno !== null && itemAno !== pAno) return false;
+          if (pMes !== null && itemMes !== pMes) return false;
+          return true;
+        });
+
+        const list = itemsFiltrados.map((item: any, idx: number) => {
+          const l = converterItemParaLancamento(item, idx);
+          return {
+            id: String(item.id),
+            unidade_id: item.unidade_id ? String(item.unidade_id) : undefined,
+            celula_nome: String(l.celulaNome || 'Célula'),
+            lideres: String(l.liderCelula || '-'),
+            data_relatorio: String(item.data_relatorio || l.data),
+            valor_pix: Number(item.valor_pix ?? 0),
+            valor_especie: Number(item.valor_especie ?? 0),
+            tesouraria_recebido: item.tesouraria_recebido === true,
+            data_recebimento: item.data_recebimento || null,
+            tesoureiro_id: item.tesoureiro_id || null,
+            nome_tesoureiro: l.NomeTesoureiro || null,
+          };
+        });
+
+        return { success: true, data: list };
+      }
+
+      return { success: true, data: [] };
     } catch (err: any) {
-      console.warn('Exceção RPC tesouraria_relatorios_detalhados:', err);
+      console.warn('Exceção ao buscar relatórios detalhados no banco inteiro:', err);
       return { success: false, data: [], error: err?.message, isAuthError: false };
     }
   },
@@ -573,6 +720,7 @@ export const TreasuryService = {
   /**
    * RPC 3: tesouraria_resumo
    * Retorna os contadores do topo da tela: { pendentes, confirmados }
+   * Calculado no banco inteiro baseado em tesouraria_recebido
    */
   async rpcTesourariaResumo(
     ano: number | string,
@@ -584,41 +732,84 @@ export const TreasuryService = {
     isAuthError?: boolean;
   }> {
     try {
+      const apiRes = await callTreasuryApi('resumo', { ano, mes });
+      if (apiRes && apiRes.success && apiRes.data) {
+        return { success: true, data: apiRes.data };
+      }
+
       const supabase = getSupabaseClient();
-      const pAno = Number(ano) || new Date().getFullYear();
+      const isTodosAnos = String(ano).toLowerCase() === 'todos' || String(ano).toLowerCase() === 'todos os anos';
+      const pAno = isTodosAnos ? null : Number(ano) || new Date().getFullYear();
       const pMes = mes !== null && mes !== undefined && mes !== 'todos' && mes !== '' ? Number(mes) : null;
 
-      const { data, error } = await supabase.rpc('tesouraria_resumo', {
-        p_ano: pAno,
-        p_mes: pMes,
-      });
+      // 1. Tenta RPC se ano específico
+      if (!isTodosAnos) {
+        try {
+          const { data, error } = await supabase.rpc('tesouraria_resumo', {
+            p_ano: pAno,
+            p_mes: pMes,
+          });
 
-      if (error) {
-        console.warn('Aviso RPC tesouraria_resumo:', error.message);
-        const isAuth =
-          error.code === '42501' ||
-          error.code === 'PGRST301' ||
-          error.message?.toLowerCase().includes('permission') ||
-          error.message?.toLowerCase().includes('jwt');
-        return { success: false, data: { pendentes: 0, confirmados: 0 }, error: error.message, isAuthError: isAuth };
+          if (!error && data) {
+            let row = { pendentes: 0, confirmados: 0 };
+            if (Array.isArray(data) && data.length > 0) {
+              row = {
+                pendentes: Number(data[0].pendentes ?? 0),
+                confirmados: Number(data[0].confirmados ?? 0),
+              };
+            } else if (typeof data === 'object') {
+              row = {
+                pendentes: Number((data as any).pendentes ?? 0),
+                confirmados: Number((data as any).confirmados ?? 0),
+              };
+            }
+            if (row.pendentes > 0 || row.confirmados > 0) {
+              return { success: true, data: row };
+            }
+          }
+        } catch {}
       }
 
-      let row = { pendentes: 0, confirmados: 0 };
-      if (Array.isArray(data) && data.length > 0) {
-        row = {
-          pendentes: Number(data[0].pendentes ?? 0),
-          confirmados: Number(data[0].confirmados ?? 0),
-        };
-      } else if (data && typeof data === 'object') {
-        row = {
-          pendentes: Number(data.pendentes ?? 0),
-          confirmados: Number(data.confirmados ?? 0),
-        };
+      // 2. Cálculo direto no banco de relatorios_semanais baseado em tesouraria_recebido
+      const { data: allRows, error: errAll } = await supabase
+        .from('relatorios_semanais')
+        .select('id, data_relatorio, tesouraria_recebido')
+        .limit(10000);
+
+      if (errAll) {
+        return { success: false, data: { pendentes: 0, confirmados: 0 }, error: errAll.message };
       }
 
-      return { success: true, data: row };
+      let pendentes = 0;
+      let confirmados = 0;
+
+      if (allRows && Array.isArray(allRows)) {
+        allRows.forEach((r: any) => {
+          let itemAno = new Date().getFullYear();
+          let itemMes = new Date().getMonth() + 1;
+          if (r.data_relatorio) {
+            const clean = String(r.data_relatorio).split('T')[0];
+            const parts = clean.split('-');
+            if (parts.length === 3) {
+              itemAno = parseInt(parts[0], 10);
+              itemMes = parseInt(parts[1], 10);
+            }
+          }
+
+          if (!isTodosAnos && pAno !== null && itemAno !== pAno) return;
+          if (pMes !== null && itemMes !== pMes) return;
+
+          if (r.tesouraria_recebido === true) {
+            confirmados++;
+          } else {
+            pendentes++;
+          }
+        });
+      }
+
+      return { success: true, data: { pendentes, confirmados } };
     } catch (err: any) {
-      console.warn('Exceção RPC tesouraria_resumo:', err);
+      console.warn('Exceção tesouraria_resumo:', err);
       return { success: false, data: { pendentes: 0, confirmados: 0 }, error: err?.message, isAuthError: false };
     }
   },
@@ -699,6 +890,11 @@ export const TreasuryService = {
     }
 
     try {
+      const apiRes = await callTreasuryApi('confirmar_individual', { id: relatorioId, userId: userIdLogado });
+      if (apiRes && apiRes.success) {
+        return { success: true };
+      }
+
       const isUUID = UUID_REGEX.test(relatorioId);
       if (isUUID) {
         const supabase = getSupabaseClient();
@@ -760,6 +956,11 @@ export const TreasuryService = {
     }
 
     try {
+      const apiRes = await callTreasuryApi('desconfirmar_individual', { id: relatorioId });
+      if (apiRes && apiRes.success) {
+        return { success: true };
+      }
+
       const isUUID = UUID_REGEX.test(relatorioId);
       if (isUUID) {
         const supabase = getSupabaseClient();
@@ -830,6 +1031,15 @@ export const TreasuryService = {
     }
 
     try {
+      const apiRes = await callTreasuryApi('atualizar_valores', {
+        id,
+        valorPix: dados.pix,
+        valorEspecie: dados.especie,
+      });
+      if (apiRes && apiRes.success) {
+        return { success: true };
+      }
+
       const isUUID = UUID_REGEX.test(id);
       if (isUUID) {
         const supabase = getSupabaseClient();
@@ -857,6 +1067,61 @@ export const TreasuryService = {
   },
 
   /**
+   * Valida relatórios em lote no Supabase
+   */
+  async confirmarLancamentosEmMassa(
+    ids: string[],
+    userIdLogado: string | number = '1'
+  ): Promise<{ success: boolean; count?: number; error?: string }> {
+    if (!Array.isArray(ids) || ids.length === 0) return { success: true, count: 0 };
+    const nowIso = new Date().toISOString();
+
+    if (memoryLancamentos) {
+      const idSet = new Set(ids);
+      memoryLancamentos = memoryLancamentos.map((l) =>
+        idSet.has(l.id) || idSet.has(String(l.ID))
+          ? {
+              ...l,
+              TESOURARIA_RECEB: true,
+              tesouraria_recebido: true,
+              status: 'CONFIRMADO',
+              data_recebimento: nowIso,
+              ID_TESOUREIRO: userIdLogado,
+              tesoureiro_id: userIdLogado,
+            }
+          : l
+      );
+    }
+
+    try {
+      const apiRes = await callTreasuryApi('confirmar_massa', { ids, userId: userIdLogado });
+      if (apiRes && apiRes.success) {
+        return { success: true, count: apiRes.count || ids.length };
+      }
+
+      const supabase = getSupabaseClient();
+      const { error } = await supabase
+        .from('relatorios_semanais')
+        .update({
+          tesouraria_recebido: true,
+          data_recebimento: nowIso,
+          tesoureiro_id: String(userIdLogado),
+          atualizado_em: nowIso,
+        })
+        .in('id', ids);
+
+      if (error) {
+        console.warn('Erro ao confirmar em massa no Supabase:', error.message);
+        return { success: false, error: error.message };
+      }
+      return { success: true, count: ids.length };
+    } catch (err: any) {
+      console.warn('Erro ao confirmar em massa:', err);
+      return { success: false, error: err?.message || 'Falha ao confirmar relatórios em lote.' };
+    }
+  },
+
+  /**
    * Exclui um relatório
    */
   async excluirLancamento(id: string): Promise<{ success: boolean; error?: string }> {
@@ -865,6 +1130,11 @@ export const TreasuryService = {
     }
 
     try {
+      const apiRes = await callTreasuryApi('excluir', { id });
+      if (apiRes && apiRes.success) {
+        return { success: true };
+      }
+
       const isUUID = UUID_REGEX.test(id);
       if (isUUID) {
         const supabase = getSupabaseClient();

@@ -1,13 +1,13 @@
 'use client';
 
 import React from 'react';
+import Image from 'next/image';
 import {
   ClipboardCheck,
   FileSpreadsheet,
   LayoutDashboard,
   ShieldCheck,
   X,
-  Church,
   LogOut,
 } from 'lucide-react';
 import { ViewMode } from '@/lib/types';
@@ -63,25 +63,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const renderContent = (isMobile: boolean) => (
     <div className="flex flex-col h-full justify-between">
       <div>
-        {/* Logo Brand Header */}
-        <div className="px-5 py-4 border-b border-[#25293d] flex items-center justify-between relative select-none">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 to-indigo-400 flex items-center justify-center text-white shadow-md shadow-indigo-600/30 shrink-0">
-              <Church className="w-5 h-5" />
-            </div>
-            <div>
-              <span className="text-sm font-black tracking-tight text-white block">
-                AppChurch
-              </span>
-              <span className="text-[10px] font-semibold text-slate-400 tracking-wider uppercase block">
-                ADM Tesouraria
-              </span>
-            </div>
+        {/* Logo Brand Header Oficial - appchurch-tesouraria.webp */}
+        <div className="px-4 py-4.5 border-b border-[#25293d] flex items-center justify-center relative select-none">
+          <div className="w-full flex items-center justify-center">
+            <Image
+              src="/assets/appchurch-tesouraria.webp"
+              alt="AppChurch Tesouraria"
+              width={180}
+              height={93}
+              priority
+              className="w-[42%] max-w-[110px] h-auto object-contain mx-auto select-none"
+              referrerPolicy="no-referrer"
+            />
           </div>
           {isMobile && (
             <button
               onClick={onCloseMobile}
-              className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-[#25293d] cursor-pointer"
+              className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-[#25293d] cursor-pointer"
               aria-label="Fechar menu"
             >
               <X className="w-5 h-5" />

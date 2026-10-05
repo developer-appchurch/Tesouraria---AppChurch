@@ -17,7 +17,6 @@ import {
 import { LancamentoTesouraria, MembroItem, PermissaoUsuario } from '@/lib/types';
 import { formatBRL, formatDateBR } from '@/lib/utils';
 import { TreasuryService } from '@/lib/treasury-service';
-import { getSupabaseClient } from '@/lib/supabase';
 
 interface RelatorioDetalhadoRPC {
   id: string;
@@ -66,6 +65,7 @@ const MESES_OPCOES = [
 ];
 
 export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
+  lancamentos = [],
   anoSelecionado,
   onSelectAno,
   onShowToast,
@@ -105,10 +105,67 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
     String(anoSelecionado).toLowerCase() === 'todos os anos' ||
     Number(anoSelecionado) === 0;
 
+  // Mostra apenas anos referentes aos relatórios existentes no banco
   const anosDisponiveis = useMemo(() => {
-    const anoAtual = new Date().getFullYear();
-    return [anoAtual + 1, anoAtual, anoAtual - 1, anoAtual - 2, anoAtual - 3];
-  }, []);
+    const anosSet = new Set<number>();
+
+    if (lancamentos && lancamentos.length > 0) {
+      lancamentos.forEach((l) => {
+        let a = l.ano;
+        if (!a && l.dataBR) {
+          const parts = l.dataBR.split('/');
+          if (parts.length === 3) {
+            const parsed = parseInt(parts[2], 10);
+            if (!isNaN(parsed) && parsed > 2000) a = parsed;
+          }
+        } else if (!a && l.data) {
+          const parsed = new Date(l.data).getFullYear();
+          if (!isNaN(parsed) && parsed > 2000) a = parsed;
+        }
+        if (a && typeof a === 'number' && a > 2000 && !isNaN(a)) {
+          anosSet.add(a);
+        }
+      });
+    }
+
+    if (relatorios && relatorios.length > 0) {
+      relatorios.forEach((r) => {
+        if (r.data_relatorio) {
+          const parts = r.data_relatorio.split('/');
+          if (parts.length === 3) {
+            const parsed = parseInt(parts[2], 10);
+            if (!isNaN(parsed) && parsed > 2000) anosSet.add(parsed);
+          } else {
+            const parsed = new Date(r.data_relatorio).getFullYear();
+            if (!isNaN(parsed) && parsed > 2000) anosSet.add(parsed);
+          }
+        }
+      });
+    }
+
+    if (anosSet.size === 0) {
+      anosSet.add(new Date().getFullYear());
+    }
+    return Array.from(anosSet).sort((a, b) => b - a);
+  }, [lancamentos, relatorios]);
+
+  // Se for o ano atual, exibe apenas até o mês mais recente que estamos
+  const mesesDisponiveis = useMemo(() => {
+    const hoje = new Date();
+    const anoAtual = hoje.getFullYear();
+    const mesAtual = hoje.getMonth() + 1;
+
+    const isAnoAtual =
+      isTodosAnos ||
+      Number(anoSelecionado) === anoAtual ||
+      String(anoSelecionado) === String(anoAtual);
+
+    if (isAnoAtual) {
+      return MESES_OPCOES.filter((m) => m.valor === 'todos' || Number(m.valor) <= mesAtual);
+    }
+
+    return MESES_OPCOES;
+  }, [anoSelecionado, isTodosAnos]);
 
   // Disparador de recarregamento
   const [mutationTrigger, setMutationTrigger] = useState<number>(0);
@@ -125,12 +182,12 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
     let isMounted = true;
 
     const carregar = async () => {
-      const pAno = isTodosAnos ? new Date().getFullYear() : Number(anoSelecionado) || new Date().getFullYear();
+      const pAno = isTodosAnos ? 'todos' : Number(anoSelecionado) || new Date().getFullYear();
       const pMes = mesFiltro !== 'todos' && mesFiltro !== '' ? Number(mesFiltro) : null;
       const pSomentePendentes = tabAtiva === 'pendentes' ? true : tabAtiva === 'confirmados' ? false : null;
 
       const precisaCarregarTudo =
-        ultimoPeriodoRef.current.ano !== pAno ||
+        ultimoPeriodoRef.current.ano !== (isTodosAnos ? 0 : Number(pAno)) ||
         ultimoPeriodoRef.current.mes !== pMes ||
         mutationTrigger > 0 ||
         ultimoPeriodoRef.current.ano === -1;
@@ -161,7 +218,7 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
           if (setoresRes.success) setSetoresList(setoresRes.data);
           if (relatoriosRes.success) setRelatorios(relatoriosRes.data);
 
-          ultimoPeriodoRef.current = { ano: pAno, mes: pMes };
+          ultimoPeriodoRef.current = { ano: isTodosAnos ? 0 : Number(pAno), mes: pMes };
         } else {
           // Apenas atualiza a listagem de relatórios ao trocar setor ou aba
           const relatoriosRes = await TreasuryService.rpcTesourariaRelatoriosDetalhados(
@@ -225,20 +282,11 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
   // AÇÃO: VALIDAR RELATÓRIO
   const handleConfirmarItem = async (id: string, celulaNome: string) => {
     try {
-      const supabase = getSupabaseClient();
       const idUsuario = usuarioLogado?.id || '1';
+      const res = await TreasuryService.confirmarLancamento(id, idUsuario);
 
-      const { error } = await supabase
-        .from('relatorios_semanais')
-        .update({
-          tesouraria_recebido: true,
-          data_recebimento: new Date().toISOString(),
-          tesoureiro_id: idUsuario,
-        })
-        .eq('id', id);
-
-      if (error) {
-        onShowToast(`Erro ao validar relatório: ${error.message}`);
+      if (!res.success) {
+        onShowToast(`Erro ao validar relatório: ${res.error || 'Falha na validação'}`);
         return;
       }
 
@@ -258,18 +306,10 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
   // AÇÃO: DESFAZER VALIDAÇÃO DE RELATÓRIO
   const handleDesfazerItem = async (id: string, celulaNome: string) => {
     try {
-      const supabase = getSupabaseClient();
-      const { error } = await supabase
-        .from('relatorios_semanais')
-        .update({
-          tesouraria_recebido: false,
-          data_recebimento: null,
-          tesoureiro_id: null,
-        })
-        .eq('id', id);
+      const res = await TreasuryService.desconfirmarLancamento(id);
 
-      if (error) {
-        onShowToast(`Erro ao reverter validação: ${error.message}`);
+      if (!res.success) {
+        onShowToast(`Erro ao reverter validação: ${res.error || 'Falha ao reverter'}`);
         return;
       }
 
@@ -286,20 +326,11 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
     if (ids.length === 0) return;
 
     try {
-      const supabase = getSupabaseClient();
       const idUsuario = usuarioLogado?.id || '1';
+      const res = await TreasuryService.confirmarLancamentosEmMassa(ids, idUsuario);
 
-      const { error } = await supabase
-        .from('relatorios_semanais')
-        .update({
-          tesouraria_recebido: true,
-          data_recebimento: new Date().toISOString(),
-          tesoureiro_id: idUsuario,
-        })
-        .in('id', ids);
-
-      if (error) {
-        onShowToast(`Erro ao validar relatórios selecionados: ${error.message}`);
+      if (!res.success) {
+        onShowToast(`Erro ao validar relatórios selecionados: ${res.error || 'Falha na validação'}`);
         return;
       }
 
@@ -408,7 +439,7 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
               }}
               className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
             >
-              {MESES_OPCOES.map((m) => (
+              {mesesDisponiveis.map((m) => (
                 <option key={m.valor} value={m.valor} className="bg-[#13192f] text-white">
                   {m.label}
                 </option>

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="100%" height="100%">
+  <defs>
+    <style>
+      @import url("https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@800;900&amp;display=swap");
+      .logo-text {
+        font-family: "Plus Jakarta Sans", "Montserrat", "Arial Black", -apple-system, sans-serif;
+        font-weight: 900;
+        fill: #1f2232;
+        text-anchor: middle;
+      }
+    </style>
+  </defs>
+  <text x="200" y="180" class="logo-text" font-size="118" letter-spacing="-3px">app</text>
+  <text x="200" y="280" class="logo-text" font-size="124" letter-spacing="-4px">Church</text>
+</svg>
