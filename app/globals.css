@@ -1,1 +1,13 @@
 @import "tailwindcss";
+
+/* Ocultar ícone/badge de desenvolvimento do Next.js no canto da tela */
+nextjs-portal,
+[data-nextjs-dev-tools],
+[data-nextjs-toast-wrapper],
+[data-next-badge],
+div[data-nextjs-dev-tools-button] {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}

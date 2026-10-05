@@ -137,6 +137,13 @@ export function converterItemParaLancamento(item: any, idx = 0): LancamentoTesou
     }
   }
 
+  // 1. Prioriza o nome real da unidade / célula vinculada
+  if (item.unidades && typeof item.unidades === 'object' && !Array.isArray(item.unidades) && item.unidades.nome) {
+    celulaNome = String(item.unidades.nome).trim();
+  } else if (item.unidade_nome) {
+    celulaNome = String(item.unidade_nome).trim();
+  }
+
   if (!celulaNome) {
     celulaNome = String(
       item.celula_nome ||
@@ -429,11 +436,19 @@ export const TreasuryService = {
     }
 
     try {
+      const apiRes = await callTreasuryApi('relatorios_detalhados', { ano: 'todos' });
+      if (apiRes && apiRes.success && Array.isArray(apiRes.data)) {
+        const formatted = apiRes.data.map((item: any, idx: number) => converterItemParaLancamento(item, idx));
+        memoryLancamentos = formatted;
+        lastLancamentosFetch = now;
+        return { data: formatted };
+      }
+
       const supabase = getSupabaseClient();
       const { data, error } = await supabase
         .from('relatorios_semanais')
         .select(
-          'id, igreja_id, data_relatorio, numero_semana, valor_pix, valor_especie, observacao, qtd_membros, qtd_criancas, data_recebimento, tesoureiro_id, tesouraria_recebido, criado_em, atualizado_em'
+          'id, igreja_id, unidade_id, lancado_por, data_relatorio, numero_semana, valor_pix, valor_especie, observacao, qtd_membros, qtd_criancas, data_recebimento, tesoureiro_id, tesouraria_recebido, criado_em, atualizado_em, unidades(id, nome, pai_id)'
         )
         .order('data_relatorio', { ascending: false })
         .limit(10000);
