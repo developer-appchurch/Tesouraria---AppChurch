@@ -43,7 +43,8 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
   const [isSkeletonLoading, setIsSkeletonLoading] = useState<boolean>(true);
   const [unidadesCadastradas, setUnidadesCadastradas] = useState<UnidadeCadastrada[]>(() => globalUnidadesCache || []);
 
-  // Busca as unidades reais do Supabase (id, nome, pai_id, ativo)
+  // Busca as unidades reais da igreja (id, nome, pai_id, ativo) uma vez ao abrir a tela.
+  // O serviço guarda em cache; não depende de onRefresh para não repetir a busca a cada renderização.
   useEffect(() => {
     let isCancelled = false;
     const carregar = async () => {
@@ -61,7 +62,7 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
     return () => {
       isCancelled = true;
     };
-  }, [onRefresh]);
+  }, []);
 
   // Efeito de Skeleton suave na inicialização
   useEffect(() => {

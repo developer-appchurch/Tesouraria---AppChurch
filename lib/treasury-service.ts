@@ -7,6 +7,8 @@ let memoryLancamentos: LancamentoTesouraria[] | null = null;
 let memoryPermissoes: PermissaoUsuario[] | null = null;
 let lastLancamentosFetch = 0;
 let lastPermissoesFetch = 0;
+let memoryUnidades: UnidadeCadastrada[] | null = null;
+let lastUnidadesFetch = 0;
 const CACHE_TTL_MS = 3 * 60 * 1000; // 3 minutes cache (no polling)
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -334,8 +336,10 @@ export const TreasuryService = {
   clearCache() {
     memoryLancamentos = null;
     memoryPermissoes = null;
+    memoryUnidades = null;
     lastLancamentosFetch = 0;
     lastPermissoesFetch = 0;
+    lastUnidadesFetch = 0;
   },
 
   /**
@@ -583,29 +587,30 @@ export const TreasuryService = {
   /**
    * Obtém todas as unidades cadastradas (id, nome, pai_id, ativo) da igreja
    */
-  async fetchUnidadesCadastradas(): Promise<UnidadeCadastrada[]> {
+  async fetchUnidadesCadastradas(forceRefresh = false): Promise<UnidadeCadastrada[]> {
+    // Cache em memória: unidades mudam raramente, não precisam ser buscadas a cada renderização
+    const now = Date.now();
+    if (!forceRefresh && memoryUnidades && now - lastUnidadesFetch < CACHE_TTL_MS) {
+      return memoryUnidades;
+    }
+
+    // Só via /api/treasury (autenticada e filtrada pela igreja do usuário).
+    // Sem consulta direta do navegador: a tabela unidades não filtra por igreja sozinha.
     const apiRes = await callTreasuryApi<UnidadeCadastrada[]>('listar_unidades');
-    if (apiRes.success && Array.isArray(apiRes.data) && apiRes.data.length > 0) {
-      return apiRes.data;
+    if (!apiRes.success || !Array.isArray(apiRes.data)) {
+      console.warn('Não foi possível carregar as unidades cadastradas:', apiRes.error);
+      return memoryUnidades || [];
     }
-    try {
-      const supabase = getSupabaseClient();
-      const { data, error } = await supabase
-        .from('unidades')
-        .select('id, nome, pai_id, ativo')
-        .order('nome', { ascending: true });
-      if (!error && data && Array.isArray(data)) {
-        return data.map((u: any) => ({
-          id: String(u.id),
-          nome: String(u.nome || '').trim(),
-          pai_id: u.pai_id ? String(u.pai_id) : null,
-          ativo: u.ativo === true,
-        }));
-      }
-    } catch (e) {
-      console.warn('Erro ao consultar unidades cadastradas:', e);
-    }
-    return [];
+
+    const lista = apiRes.data.map((u: any) => ({
+      id: String(u.id),
+      nome: String(u.nome || '').trim(),
+      pai_id: u.pai_id ? String(u.pai_id) : null,
+      ativo: u.ativo === true,
+    }));
+    memoryUnidades = lista;
+    lastUnidadesFetch = now;
+    return lista;
   },
 
   /**

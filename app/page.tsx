@@ -124,17 +124,18 @@ export default function TreasuryApp() {
     };
   }, [carregarDados]);
 
-  const handleRefresh = async () => {
+  // Estável entre renderizações (useCallback): telas que recebem onRefresh não re-executam efeitos à toa
+  const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
     try {
-      const ok = await carregarDados(true);
+      const [ok] = await Promise.all([carregarDados(true), TreasuryService.fetchUnidadesCadastradas(true)]);
       if (ok) showToast('Dados sincronizados com o Supabase com sucesso!');
     } catch (err) {
       console.warn('Erro ao atualizar dados:', err);
     } finally {
       setIsRefreshing(false);
     }
-  };
+  }, [carregarDados, showToast]);
 
   const handleLoginSuccess = (membro: MembroItem) => {
     try {
