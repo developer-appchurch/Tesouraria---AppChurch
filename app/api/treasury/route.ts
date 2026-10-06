@@ -41,17 +41,42 @@ class HttpError extends Error {
 
 let adminClient: SupabaseClient | null = null;
 
+const DEFAULT_SUPABASE_URL = 'https://srjkwwddbxniqhzqvrhc.supabase.co';
+// A chave de serviço só é aceita de variáveis exclusivas do servidor.
+// Variáveis NEXT_PUBLIC_* são embutidas no código do navegador e NUNCA devem guardar segredos.
+const ENV_CHAVE = ['SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_SECRET_KEY'] as const;
+const ENV_URL = ['SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_URL'] as const;
+
+/** true para chave secreta nova (sb_secret_...) ou JWT legado com role "service_role". */
+function ehChaveDeServico(valor: string): boolean {
+  if (valor.startsWith('sb_secret_')) return true;
+  const partes = valor.split('.');
+  if (partes.length !== 3) return false;
+  try {
+    const payload = JSON.parse(Buffer.from(partes[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
+    return payload?.role === 'service_role';
+  } catch {
+    return false;
+  }
+}
+
 function getAdminClient(): SupabaseClient {
   if (adminClient) return adminClient;
-  const url = process.env.SUPABASE_URL?.trim() || process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() || process.env.SUPABASE_SECRET_KEY?.trim();
-  if (!url || !key) {
+
+  const url =
+    ENV_URL.map((n) => process.env[n]?.trim() || '').find((v) => /^https?:\/\//i.test(v)) || DEFAULT_SUPABASE_URL;
+  const chave = ENV_CHAVE.map((nome) => ({ nome, valor: process.env[nome]?.trim() || '' })).find(
+    (v) => v.valor && ehChaveDeServico(v.valor)
+  );
+
+  if (!chave) {
     throw new HttpError(
       500,
-      'Servidor sem configuração do Supabase (defina SUPABASE_URL/NEXT_PUBLIC_SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY).'
+      'Servidor sem a chave de serviço do Supabase. Cadastre a "secret key" do projeto na variável SUPABASE_SERVICE_ROLE_KEY.'
     );
   }
-  adminClient = createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
+
+  adminClient = createClient(url, chave.valor, { auth: { persistSession: false, autoRefreshToken: false } });
   return adminClient;
 }
 
