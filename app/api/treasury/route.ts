@@ -333,6 +333,17 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ success: true, data: { resumo, setores, relatorios } });
       }
 
+      case 'listar_unidades': {
+        const rows = await buscarTodos<any>(() =>
+          supabase
+            .from('unidades')
+            .select('id, nome, pai_id, ativo')
+            .eq('igreja_id', igrejaId)
+            .order('nome', { ascending: true })
+        );
+        return NextResponse.json({ success: true, data: rows });
+      }
+
       case 'relatorios_detalhados': {
         const data = await carregarRelatorios(supabase, igrejaId, params);
         return NextResponse.json({ success: true, data });

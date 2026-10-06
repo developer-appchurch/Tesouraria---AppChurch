@@ -1,5 +1,5 @@
 import { getSupabaseClient } from './supabase';
-import { LancamentoTesouraria, PermissaoUsuario, AppChurchUser, MembroItem } from './types';
+import { LancamentoTesouraria, PermissaoUsuario, AppChurchUser, MembroItem, UnidadeCadastrada } from './types';
 import { LISTA_CELULAS } from './celulas-data';
 
 // In-memory cache for high performance and reduced query consumption
@@ -242,6 +242,7 @@ export function converterItemParaLancamento(item: any, idx = 0): LancamentoTesou
     id,
     ID: item.ID || id,
     igreja_id: item.igreja_id,
+    unidade_id: item.unidade_id ? String(item.unidade_id) : undefined,
     data: dataIso,
     dataBR,
     semanaNumero: numSemanaFinal,
@@ -577,6 +578,34 @@ export const TreasuryService = {
     const apiRes = await callTreasuryApi<{ pendentes: number; confirmados: number }>('resumo', { ano, mes });
     if (apiRes.success && apiRes.data) return { success: true, data: apiRes.data };
     return { success: false, data: { pendentes: 0, confirmados: 0 }, error: apiRes.error, isAuthError: apiRes.authError };
+  },
+
+  /**
+   * Obtém todas as unidades cadastradas (id, nome, pai_id, ativo) da igreja
+   */
+  async fetchUnidadesCadastradas(): Promise<UnidadeCadastrada[]> {
+    const apiRes = await callTreasuryApi<UnidadeCadastrada[]>('listar_unidades');
+    if (apiRes.success && Array.isArray(apiRes.data) && apiRes.data.length > 0) {
+      return apiRes.data;
+    }
+    try {
+      const supabase = getSupabaseClient();
+      const { data, error } = await supabase
+        .from('unidades')
+        .select('id, nome, pai_id, ativo')
+        .order('nome', { ascending: true });
+      if (!error && data && Array.isArray(data)) {
+        return data.map((u: any) => ({
+          id: String(u.id),
+          nome: String(u.nome || '').trim(),
+          pai_id: u.pai_id ? String(u.pai_id) : null,
+          ativo: u.ativo === true,
+        }));
+      }
+    } catch (e) {
+      console.warn('Erro ao consultar unidades cadastradas:', e);
+    }
+    return [];
   },
 
   /**

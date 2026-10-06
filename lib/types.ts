@@ -22,6 +22,7 @@ export interface LancamentoTesouraria {
   id: string;
   ID?: string | number;
   igreja_id?: string;
+  unidade_id?: string;
   data: string; // YYYY-MM-DD
   dataBR: string; // DD/MM/YYYY
   semanaNumero: number;
@@ -136,4 +137,11 @@ export interface CelulaItem {
   Area?: string;
   Created?: string;
   Criado?: string;
+}
+
+export interface UnidadeCadastrada {
+  id: string;
+  nome: string;
+  pai_id: string | null;
+  ativo: boolean;
 }

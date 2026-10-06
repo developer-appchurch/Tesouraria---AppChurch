@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import {
   Calendar,
   CheckCircle2,
@@ -11,9 +11,11 @@ import {
   Trash2,
   Loader2,
 } from 'lucide-react';
-import { LancamentoTesouraria } from '@/lib/types';
+import { LancamentoTesouraria, UnidadeCadastrada } from '@/lib/types';
 import { formatBRL, formatDateBR } from '@/lib/utils';
 import { TreasuryService, MAPA_CELULAS_SETORES } from '@/lib/treasury-service';
+
+let globalUnidadesCache: UnidadeCadastrada[] | null = null;
 
 interface RelacaoEnvelopesViewProps {
   lancamentos: LancamentoTesouraria[];
@@ -39,6 +41,27 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
   const [relatorioParaExcluir, setRelatorioParaExcluir] = useState<LancamentoTesouraria | null>(null);
   const [isExcluindo, setIsExcluindo] = useState<boolean>(false);
   const [isSkeletonLoading, setIsSkeletonLoading] = useState<boolean>(true);
+  const [unidadesCadastradas, setUnidadesCadastradas] = useState<UnidadeCadastrada[]>(() => globalUnidadesCache || []);
+
+  // Busca as unidades reais do Supabase (id, nome, pai_id, ativo)
+  useEffect(() => {
+    let isCancelled = false;
+    const carregar = async () => {
+      try {
+        const data = await TreasuryService.fetchUnidadesCadastradas();
+        if (!isCancelled && data && data.length > 0) {
+          globalUnidadesCache = data;
+          setUnidadesCadastradas(data);
+        }
+      } catch (err) {
+        console.warn('Erro ao carregar unidades cadastradas:', err);
+      }
+    };
+    carregar();
+    return () => {
+      isCancelled = true;
+    };
+  }, [onRefresh]);
 
   // Efeito de Skeleton suave na inicialização
   useEffect(() => {
@@ -62,65 +85,70 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
       ? Number(mesSelecionado)
       : null;
 
-  // 1. Extrair células do setor a partir do catálogo oficial e dos lançamentos reais (somente ativas: ativo !== false)
+  // 1. Extrair APENAS as unidades cujo pai_id(setor) seja o setor selecionado e ativo = true
   const celulasDoSetor = useMemo(() => {
-    const celulasMap = new Map<string, { id: string; nome: string; lider: string; setor: string; ativo: boolean }>();
     const setorAlvo = (setorSelecionado || 'Safira').trim().toLowerCase();
 
-    // 1.1 Adiciona células conhecidas do catálogo oficial
-    Object.entries(MAPA_CELULAS_SETORES).forEach(([nomeLower, setorOficial]) => {
-      if (isTodosSetores || setorOficial.toLowerCase() === setorAlvo) {
-        const nomeFormatado = nomeLower.charAt(0).toUpperCase() + nomeLower.slice(1);
-        const key = `${setorOficial.toLowerCase()}___${nomeLower}`;
-        if (!celulasMap.has(key)) {
-          celulasMap.set(key, {
-            id: key,
-            nome: nomeFormatado,
-            lider: '-',
-            setor: setorOficial,
-            ativo: true,
-          });
-        }
-      }
+    // Mapeamento de id do setor para nome do setor
+    const mapaSetoresPorId = new Map<string, string>();
+    unidadesCadastradas.forEach((u) => {
+      mapaSetoresPorId.set(u.id, u.nome);
     });
 
-    // 1.2 Atualiza com as células e líderes reais dos lançamentos
-    for (let i = 0; i < lancamentos.length; i++) {
-      const l = lancamentos[i];
-      const nome = (l.Célula || l.celulaNome || '').trim();
-      if (!nome) continue;
+    // Encontra a unidade que representa o setor selecionado (ex: unidade com nome "Safira")
+    const setorUnit = unidadesCadastradas.find(
+      (u) => u.nome.trim().toLowerCase() === setorAlvo
+    );
 
-      let setor = (l.Setor || l.setor || '').trim();
-      if (!setor) {
-        const cLower = nome.toLowerCase();
-        setor = MAPA_CELULAS_SETORES[cLower] || 'Safira';
-      }
+    // Filtra as unidades do banco:
+    // Deve ter como pai_id o ID do setor selecionado na parte de cima, e com ativo === true
+    let unidadesFiltradas: UnidadeCadastrada[] = [];
 
-      if (!isTodosSetores && setor.toLowerCase() !== setorAlvo) {
-        continue;
-      }
-
-      const isAtivo = l.ativo !== false;
-      const key = `${setor.toLowerCase()}___${nome.toLowerCase()}`;
-
-      if (!isAtivo) {
-        celulasMap.delete(key);
-        continue;
-      }
-
-      const existing = celulasMap.get(key);
-      const lider = l.LiderCelula || l.liderCelula || (existing && existing.lider !== '-' ? existing.lider : '-');
-      celulasMap.set(key, {
-        id: l.id || key,
-        nome,
-        lider: lider || '-',
-        setor,
-        ativo: isAtivo,
+    if (isTodosSetores) {
+      // Se "Todos os Setores", exibe todas as células ativas que possuem um pai_id (setor)
+      unidadesFiltradas = unidadesCadastradas.filter(
+        (u) => Boolean(u.pai_id) && u.ativo === true
+      );
+    } else if (setorUnit) {
+      unidadesFiltradas = unidadesCadastradas.filter(
+        (u) => u.pai_id === setorUnit.id && u.ativo === true
+      );
+    } else {
+      // Fallback: se setorUnit não for encontrado pelo nome exato, verifica se algum pai_id tem o nome do setor
+      unidadesFiltradas = unidadesCadastradas.filter((u) => {
+        if (!u.pai_id || u.ativo !== true) return false;
+        const nomePai = mapaSetoresPorId.get(u.pai_id);
+        return Boolean(nomePai && nomePai.trim().toLowerCase() === setorAlvo);
       });
     }
 
-    return Array.from(celulasMap.values())
-      .filter((c) => c.ativo !== false)
+    // Mapeia líderes dos lançamentos para preencher o nome do líder de cada unidade
+    const lideresPorUnidade = new Map<string, string>();
+    const lideresPorNome = new Map<string, string>();
+    lancamentos.forEach((l) => {
+      const lid = l.LiderCelula || l.liderCelula;
+      if (lid && lid !== '-') {
+        if (l.unidade_id) lideresPorUnidade.set(l.unidade_id, lid);
+        const cNome = (l.Célula || l.celulaNome || '').trim().toLowerCase();
+        if (cNome) lideresPorNome.set(cNome, lid);
+      }
+    });
+
+    return unidadesFiltradas
+      .map((u) => {
+        const setorNome = (u.pai_id && mapaSetoresPorId.get(u.pai_id)) || setorUnit?.nome || setorSelecionado || 'Safira';
+        const lider =
+          lideresPorUnidade.get(u.id) ||
+          lideresPorNome.get(u.nome.trim().toLowerCase()) ||
+          '-';
+        return {
+          id: u.id,
+          nome: u.nome,
+          lider,
+          setor: setorNome,
+          ativo: u.ativo,
+        };
+      })
       .sort((a, b) => {
         if (isTodosSetores) {
           const cmpSetor = a.setor.localeCompare(b.setor);
@@ -128,7 +156,7 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
         }
         return a.nome.localeCompare(b.nome);
       });
-  }, [lancamentos, setorSelecionado, isTodosSetores]);
+  }, [unidadesCadastradas, setorSelecionado, isTodosSetores, lancamentos]);
 
   // 2. 5 semanas do mês baseadas no último sábado do mês
   const semanas = useMemo(() => {
@@ -266,6 +294,10 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
         `${setorNome}___${celNome}___sem_${matchedSemana.num}`,
       ];
 
+      if (l.unidade_id) {
+        keysToAdd.push(`u_${l.unidade_id}___sem_${matchedSemana.num}`);
+      }
+
       for (const k of keysToAdd) {
         const existing = map.get(k);
         if (existing) {
@@ -289,31 +321,55 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
     return map;
   }, [lancamentos, semanas, anoNumFiltro, mesNumFiltro, setorSelecionado, isTodosSetores]);
 
-  // 4. Resumo SKUs: Validados vs Pendentes (O(N))
+  // 4. Helper O(1) para obter valores da célula
+  const getValores = useCallback(
+    (
+      celulaId: string,
+      celulaNome: string,
+      celulaSetor: string,
+      semInfo: { num: number; data: string; dataIso: string; dataObj: Date }
+    ) => {
+      const cNorm = celulaNome.trim().toLowerCase();
+      const sNorm = (celulaSetor || '').trim().toLowerCase();
+
+      const data =
+        (celulaId ? lancamentosPorCelulaESemana.get(`u_${celulaId}___sem_${semInfo.num}`) : undefined) ||
+        lancamentosPorCelulaESemana.get(`${sNorm}___${cNorm}___sem_${semInfo.num}`) ||
+        lancamentosPorCelulaESemana.get(`${cNorm}___sem_${semInfo.num}`);
+
+      if (!data) {
+        return { temDado: false, pix: null, dinheiro: null, validadoTesouraria: false, total: 0 };
+      }
+
+      return {
+        temDado: true,
+        pix: data.pix,
+        dinheiro: data.dinheiro,
+        total: data.total,
+        validadoTesouraria: data.validadoTesouraria,
+      };
+    },
+    [lancamentosPorCelulaESemana]
+  );
+
+  // 5. Resumo SKUs: Validados vs Pendentes sincronizado 100% com o que está visível na tabela
+  // Considera estritamente as células ativas do setor exibidas e as semanas da tabela
   const resumoSKUs = useMemo(() => {
     let qtdValidados = 0;
     let qtdPendentes = 0;
     let totalLancados = 0;
 
-    const setorFiltro = (setorSelecionado || '').trim().toLowerCase();
-
-    for (let i = 0; i < lancamentos.length; i++) {
-      const l = lancamentos[i];
-      let s = (l.Setor || l.setor || '').trim().toLowerCase();
-      if (!s) {
-        const c = (l.Célula || l.celulaNome || '').trim().toLowerCase();
-        s = (MAPA_CELULAS_SETORES[c] || 'safira').toLowerCase();
-      }
-
-      if (!isTodosSetores && s !== setorFiltro) continue;
-      if (anoNumFiltro !== null && l.ano && Number(l.ano) !== anoNumFiltro) continue;
-      if (mesNumFiltro !== null && l.mes && Number(l.mes) !== mesNumFiltro) continue;
-
-      totalLancados++;
-      if (l.TESOURARIA_RECEB === true) {
-        qtdValidados++;
-      } else {
-        qtdPendentes++;
+    for (const celula of celulasDoSetor) {
+      for (const sem of semanas) {
+        const val = getValores(celula.id, celula.nome, celula.setor, sem);
+        if (val.temDado) {
+          totalLancados++;
+          if (val.validadoTesouraria) {
+            qtdValidados++;
+          } else {
+            qtdPendentes++;
+          }
+        }
       }
     }
 
@@ -322,9 +378,9 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
       qtdPendentes,
       totalLancados,
     };
-  }, [lancamentos, setorSelecionado, isTodosSetores, anoNumFiltro, mesNumFiltro]);
+  }, [celulasDoSetor, semanas, getValores]);
 
-  // 5. Detecção de relatórios duplicados em alta velocidade O(N)
+  // 6. Detecção de relatórios duplicados em alta velocidade O(N)
   const duplicadosInfo = useMemo(() => {
     const numerosSemanasTela = new Set(semanas.map((s) => s.num));
     const relsPorSemanaECelula = new Map<string, LancamentoTesouraria[]>();
@@ -404,32 +460,6 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
       grupos,
     };
   }, [lancamentos, setorSelecionado, isTodosSetores, anoNumFiltro, mesNumFiltro, semanas]);
-
-  // Helper O(1) para obter valores da célula
-  const getValores = (
-    celulaNome: string,
-    celulaSetor: string,
-    semInfo: { num: number; data: string; dataIso: string; dataObj: Date }
-  ) => {
-    const cNorm = celulaNome.trim().toLowerCase();
-    const sNorm = (celulaSetor || '').trim().toLowerCase();
-
-    const data =
-      lancamentosPorCelulaESemana.get(`${sNorm}___${cNorm}___sem_${semInfo.num}`) ||
-      lancamentosPorCelulaESemana.get(`${cNorm}___sem_${semInfo.num}`);
-
-    if (!data) {
-      return { temDado: false, pix: null, dinheiro: null, validadoTesouraria: false, total: 0 };
-    }
-
-    return {
-      temDado: true,
-      pix: data.pix,
-      dinheiro: data.dinheiro,
-      total: data.total,
-      validadoTesouraria: data.validadoTesouraria,
-    };
-  };
 
   const handleConfirmarExclusao = async () => {
     if (!relatorioParaExcluir) return;
@@ -648,18 +678,21 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
                               PIX
                             </td>
                             {semanas.map((sem, sIdx) => {
-                              const val = getValores(celula.nome, celula.setor, sem);
+                              const val = getValores(celula.id, celula.nome, celula.setor, sem);
                               const isValidado = val.validadoTesouraria;
                               const bgClass = isValidado ? 'bg-white' : 'bg-[#EDABAB]';
+                              const temRelatorio = val.temDado;
+                              const valorPix = val.pix ?? 0;
+
                               return (
                                 <td
                                   key={`pix-${celula.id}-${sem.data}-${sIdx}`}
                                   className={`py-2 px-2.5 text-right font-mono text-xs border-r border-[#cbd2e0] last:border-r-0 ${bgClass}`}
                                 >
-                                  {val.temDado && val.pix !== null && val.pix > 0 ? (
-                                    <span className="inline-flex items-center gap-1">
-                                      <span className="text-slate-900 font-semibold">{formatBRL(val.pix)}</span>
-                                      {isValidado && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 inline-block" />}
+                                  {temRelatorio ? (
+                                    <span className="inline-flex items-center justify-end gap-1 w-full">
+                                      <span className="text-slate-900 font-semibold">{formatBRL(valorPix)}</span>
+                                      {isValidado && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 inline-block shrink-0" />}
                                     </span>
                                   ) : (
                                     <span className="text-slate-400 font-medium">R$ 0,00</span>
@@ -675,18 +708,21 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
                               Espécie
                             </td>
                             {semanas.map((sem, sIdx) => {
-                              const val = getValores(celula.nome, celula.setor, sem);
+                              const val = getValores(celula.id, celula.nome, celula.setor, sem);
                               const isValidado = val.validadoTesouraria;
-                              const bgClass = isValidado ? 'bg-white' : 'bg-[#EDABAB]';
+                              const bgClass = isValidado ? 'bg-[#eaedf4]' : 'bg-[#EDABAB]';
+                              const temRelatorio = val.temDado;
+                              const valorEsp = val.dinheiro ?? 0;
+
                               return (
                                 <td
                                   key={`esp-${celula.id}-${sem.data}-${sIdx}`}
                                   className={`py-2 px-2.5 text-right font-mono text-xs border-r border-[#cbd2e0] last:border-r-0 ${bgClass}`}
                                 >
-                                  {val.temDado && val.dinheiro !== null && val.dinheiro > 0 ? (
-                                    <span className="inline-flex items-center gap-1">
-                                      <span className="text-slate-900 font-semibold">{formatBRL(val.dinheiro)}</span>
-                                      {isValidado && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 inline-block" />}
+                                  {temRelatorio ? (
+                                    <span className="inline-flex items-center justify-end gap-1 w-full">
+                                      <span className="text-slate-900 font-semibold">{formatBRL(valorEsp)}</span>
+                                      {isValidado && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 inline-block shrink-0" />}
                                     </span>
                                   ) : (
                                     <span className="text-slate-400 font-medium">R$ 0,00</span>
