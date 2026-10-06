@@ -278,21 +278,52 @@ export function converterItemParaLancamento(item: any, idx = 0): LancamentoTesou
   };
 }
 
-async function callTreasuryApi(action: string, params: any = {}): Promise<any> {
-  if (typeof window === 'undefined') return null;
+interface TreasuryApiResult<T = any> {
+  success: boolean;
+  data?: T;
+  count?: number;
+  error?: string;
+  /** true quando a sessão expirou ou o usuário não tem permissão de tesouraria (401/403) */
+  authError?: boolean;
+}
+
+/**
+ * Único caminho de dados da Tesouraria: a rota /api/treasury, autenticada com o
+ * token da sessão Supabase do usuário. Não há "plano B" consultando o banco
+ * direto do navegador — se a API falhar, o erro volta para a tela, sem novas tentativas.
+ */
+async function callTreasuryApi<T = any>(action: string, params: any = {}): Promise<TreasuryApiResult<T>> {
+  if (typeof window === 'undefined') return { success: false, error: 'Indisponível no servidor.' };
   try {
+    const supabase = getSupabaseClient();
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData?.session?.access_token;
+    if (!token) {
+      return { success: false, authError: true, error: 'Sessão expirada. Faça login novamente.' };
+    }
+
     const res = await fetch('/api/treasury', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ action, params }),
     });
-    if (res.ok) {
-      return await res.json();
-    }
-  } catch (e) {
+    const body = await res.json().catch(() => ({}));
+    if (res.ok && body?.success) return body;
+    return {
+      success: false,
+      authError: res.status === 401 || res.status === 403 || body?.authError === true,
+      error: body?.error || `Falha na API da tesouraria (código ${res.status}).`,
+    };
+  } catch (e: any) {
     console.warn('[callTreasuryApi] Falha na chamada da API:', e);
+    return { success: false, error: 'Falha de conexão com o servidor. Verifique sua internet e tente novamente.' };
   }
-  return null;
+}
+
+export interface PainelValidacao {
+  resumo: { pendentes: number; confirmados: number };
+  setores: { setor_id: string; setor_nome: string; qtd_pendentes: number }[];
+  relatorios: any[];
 }
 
 export const TreasuryService = {
@@ -469,54 +500,39 @@ export const TreasuryService = {
    */
   async fetchRelatorios(
     forceRefresh = false
-  ): Promise<{ data: LancamentoTesouraria[]; error?: string }> {
+  ): Promise<{ data: LancamentoTesouraria[]; error?: string; isAuthError?: boolean }> {
     const now = Date.now();
     if (!forceRefresh && memoryLancamentos && now - lastLancamentosFetch < CACHE_TTL_MS) {
       return { data: memoryLancamentos };
     }
 
-    try {
-      const apiRes = await callTreasuryApi('relatorios_detalhados', { ano: 'todos' });
-      if (apiRes && apiRes.success && Array.isArray(apiRes.data)) {
-        const formatted = apiRes.data.map((item: any, idx: number) => converterItemParaLancamento(item, idx));
-        memoryLancamentos = formatted;
-        lastLancamentosFetch = now;
-        return { data: formatted };
-      }
-
-      const supabase = getSupabaseClient();
-      const { data, error } = await supabase
-        .from('relatorios_semanais')
-        .select(
-          'id, igreja_id, unidade_id, lancado_por, data_relatorio, numero_semana, valor_pix, valor_especie, observacao, qtd_membros, qtd_criancas, data_recebimento, tesoureiro_id, tesouraria_recebido, criado_em, atualizado_em, unidades(id, nome, pai_id)'
-        )
-        .order('data_relatorio', { ascending: false })
-        .limit(10000);
-
-      if (error) {
-        console.warn('Aviso ao consultar relatorios_semanais no Supabase:', error.message);
-        return { data: memoryLancamentos || [], error: error.message };
-      }
-
-      if (data && Array.isArray(data)) {
-        const formatted = data.map((item, idx) => converterItemParaLancamento(item, idx));
-        memoryLancamentos = formatted;
-        lastLancamentosFetch = now;
-        return { data: formatted };
-      }
-
-      memoryLancamentos = [];
+    const apiRes = await callTreasuryApi<any[]>('relatorios_detalhados', { ano: 'todos' });
+    if (apiRes.success && Array.isArray(apiRes.data)) {
+      const formatted = apiRes.data.map((item: any, idx: number) => converterItemParaLancamento(item, idx));
+      memoryLancamentos = formatted;
       lastLancamentosFetch = now;
-      return { data: [] };
-    } catch (err: any) {
-      console.warn('Erro ao conectar com Supabase:', err);
-      return { data: memoryLancamentos || [], error: err.message };
+      return { data: formatted };
     }
+    return { data: memoryLancamentos || [], error: apiRes.error, isAuthError: apiRes.authError };
   },
 
   /**
-   * RPC 1: tesouraria_setores_pendencias
-   * Retorna lista de setores da igreja com contagem de relatórios pendentes para o período
+   * Tudo que a tela "Validar Relatórios" precisa (resumo, pendências por setor e
+   * relatórios) em UMA chamada por período.
+   */
+  async fetchPainelValidacao(
+    ano: number | string,
+    mes?: number | string | null
+  ): Promise<{ success: boolean; data?: PainelValidacao; error?: string; isAuthError?: boolean }> {
+    const apiRes = await callTreasuryApi<PainelValidacao>('painel_validacao', { ano, mes });
+    if (apiRes.success && apiRes.data) {
+      return { success: true, data: apiRes.data };
+    }
+    return { success: false, error: apiRes.error, isAuthError: apiRes.authError };
+  },
+
+  /**
+   * Pendências por setor no período (via /api/treasury)
    */
   async rpcTesourariaSetoresPendencias(
     ano: number | string,
@@ -527,255 +543,27 @@ export const TreasuryService = {
     error?: string;
     isAuthError?: boolean;
   }> {
-    try {
-      const apiRes = await callTreasuryApi('setores_pendencias', { ano, mes });
-      if (apiRes && apiRes.success && Array.isArray(apiRes.data)) {
-        return { success: true, data: apiRes.data };
-      }
-
-      const supabase = getSupabaseClient();
-      const isTodosAnos = String(ano).toLowerCase() === 'todos' || String(ano).toLowerCase() === 'todos os anos';
-      const pAno = isTodosAnos ? null : Number(ano) || new Date().getFullYear();
-      const pMes = mes !== null && mes !== undefined && mes !== 'todos' && mes !== '' ? Number(mes) : null;
-
-      if (!isTodosAnos) {
-        const { data, error } = await supabase.rpc('tesouraria_setores_pendencias', {
-          p_ano: pAno,
-          p_mes: pMes,
-        });
-
-        if (!error && Array.isArray(data) && data.length > 0) {
-          const list = data.map((item: any) => ({
-            setor_id: String(item.setor_id || item.id || ''),
-            setor_nome: String(item.setor_nome || item.nome || item.setor || 'Setor').trim(),
-            qtd_pendentes: Number(item.qtd_pendentes ?? item.pendentes ?? 0),
-          }));
-          return { success: true, data: list };
-        }
-      }
-
-      // Cálculo direto no banco para suportar todos os anos
-      const { data: allRows } = await supabase
-        .from('relatorios_semanais')
-        .select('id, data_relatorio, tesouraria_recebido, observacao')
-        .limit(10000);
-
-      const setoresMap = new Map<string, number>();
-      const setoresPadrao = ['Safira', 'Fire', 'White', 'Black', 'Azul', 'Amarelo', 'Legacy', 'Onix', 'Diamante', 'Titanium'];
-      setoresPadrao.forEach((s) => setoresMap.set(s, 0));
-
-      if (allRows && Array.isArray(allRows)) {
-        allRows.forEach((r: any) => {
-          let itemAno = new Date().getFullYear();
-          let itemMes = new Date().getMonth() + 1;
-          if (r.data_relatorio) {
-            const clean = String(r.data_relatorio).split('T')[0];
-            const parts = clean.split('-');
-            if (parts.length === 3) {
-              itemAno = parseInt(parts[0], 10);
-              itemMes = parseInt(parts[1], 10);
-            }
-          }
-
-          if (!isTodosAnos && pAno !== null && itemAno !== pAno) return;
-          if (pMes !== null && itemMes !== pMes) return;
-
-          // Contabiliza apenas pendentes (tesouraria_recebido !== true)
-          if (r.tesouraria_recebido !== true) {
-            let setor = 'Safira';
-            const obs = String(r.observacao || '');
-            if (obs.toLowerCase().includes('setor:')) {
-              const match = obs.match(/setor:\s*([^|]+)/i);
-              if (match) setor = match[1].trim();
-            }
-            setoresMap.set(setor, (setoresMap.get(setor) || 0) + 1);
-          }
-        });
-      }
-
-      const list = Array.from(setoresMap.entries()).map(([nome, qtd]) => ({
-        setor_id: nome,
-        setor_nome: nome,
-        qtd_pendentes: qtd,
-      }));
-
-      return { success: true, data: list };
-    } catch (err: any) {
-      console.warn('Exceção RPC tesouraria_setores_pendencias:', err);
-      return { success: false, data: [], error: err?.message, isAuthError: false };
-    }
+    const apiRes = await callTreasuryApi<any[]>('setores_pendencias', { ano, mes });
+    if (apiRes.success && Array.isArray(apiRes.data)) return { success: true, data: apiRes.data };
+    return { success: false, data: [], error: apiRes.error, isAuthError: apiRes.authError };
   },
 
   /**
-   * RPC 2: tesouraria_relatorios_detalhados
-   * Retorna os relatórios detalhados da igreja para a tabela principal
-   * Busca no banco inteiro (limit 10000) e valida exclusivamente via tesouraria_recebido === true
+   * Relatórios detalhados do período (via /api/treasury)
    */
   async rpcTesourariaRelatoriosDetalhados(
     ano: number | string,
     mes?: number | string | null,
     setorId?: string | null,
     somentePendentes?: boolean | null
-  ): Promise<{
-    success: boolean;
-    data: {
-      id: string;
-      unidade_id?: string;
-      celula_nome: string;
-      lideres: string;
-      data_relatorio: string;
-      valor_pix: number;
-      valor_especie: number;
-      tesouraria_recebido: boolean;
-      data_recebimento?: string | null;
-      tesoureiro_id?: string | null;
-      nome_tesoureiro?: string | null;
-    }[];
-    error?: string;
-    isAuthError?: boolean;
-  }> {
-    try {
-      const apiRes = await callTreasuryApi('relatorios_detalhados', {
-        ano,
-        mes,
-        setorId,
-        somentePendentes,
-      });
-      if (apiRes && apiRes.success && Array.isArray(apiRes.data)) {
-        return { success: true, data: apiRes.data };
-      }
-
-      const supabase = getSupabaseClient();
-      const isTodosAnos = String(ano).toLowerCase() === 'todos' || String(ano).toLowerCase() === 'todos os anos';
-      const pAno = isTodosAnos ? null : Number(ano) || new Date().getFullYear();
-      const pMes = mes !== null && mes !== undefined && mes !== 'todos' && mes !== '' ? Number(mes) : null;
-      const pSetorId = setorId && setorId !== 'todos' ? String(setorId) : null;
-      const pSomentePendentes = typeof somentePendentes === 'boolean' ? somentePendentes : null;
-
-      // 1. Tenta RPC
-      let rpcList: any[] = [];
-      let rpcSuccess = false;
-      if (!isTodosAnos) {
-        try {
-          const { data, error } = await supabase.rpc('tesouraria_relatorios_detalhados', {
-            p_ano: pAno,
-            p_mes: pMes,
-            p_setor_id: pSetorId,
-            p_somente_pendentes: pSomentePendentes,
-          });
-
-          if (!error && Array.isArray(data)) {
-            rpcList = data;
-            rpcSuccess = true;
-          }
-        } catch {}
-      }
-
-      // Se a RPC retornou mais de 100 registros (sem limite truncado)
-      if (rpcSuccess && rpcList.length > 100) {
-        const list = rpcList.map((item: any) => ({
-          id: String(item.id),
-          unidade_id: item.unidade_id ? String(item.unidade_id) : undefined,
-          celula_nome: String(item.celula_nome || 'Célula').trim(),
-          lideres: String(item.lideres || '-').trim(),
-          data_relatorio: item.data_relatorio || '',
-          valor_pix: Number(item.valor_pix ?? 0),
-          valor_especie: Number(item.valor_especie ?? 0),
-          tesouraria_recebido: item.tesouraria_recebido === true,
-          data_recebimento: item.data_recebimento || null,
-          tesoureiro_id: item.tesoureiro_id || null,
-          nome_tesoureiro: item.nome_tesoureiro || null,
-        }));
-        return { success: true, data: list };
-      }
-
-      // 2. Consulta direta à tabela relatorios_semanais para buscar no BANCO INTEIRO (sem limite de 100)
-      let query = supabase
-        .from('relatorios_semanais')
-        .select('id, igreja_id, data_relatorio, numero_semana, valor_pix, valor_especie, observacao, data_recebimento, tesoureiro_id, tesouraria_recebido, criado_em')
-        .order('data_relatorio', { ascending: false })
-        .limit(10000);
-
-      if (pSomentePendentes === true) {
-        query = query.or('tesouraria_recebido.eq.false,tesouraria_recebido.is.null');
-      } else if (pSomentePendentes === false) {
-        query = query.eq('tesouraria_recebido', true);
-      }
-
-      const { data, error } = await query;
-
-      if (error) {
-        if (rpcSuccess) {
-          const list = rpcList.map((item: any) => ({
-            id: String(item.id),
-            unidade_id: item.unidade_id ? String(item.unidade_id) : undefined,
-            celula_nome: String(item.celula_nome || 'Célula').trim(),
-            lideres: String(item.lideres || '-').trim(),
-            data_relatorio: item.data_relatorio || '',
-            valor_pix: Number(item.valor_pix ?? 0),
-            valor_especie: Number(item.valor_especie ?? 0),
-            tesouraria_recebido: item.tesouraria_recebido === true,
-            data_recebimento: item.data_recebimento || null,
-            tesoureiro_id: item.tesoureiro_id || null,
-            nome_tesoureiro: item.nome_tesoureiro || null,
-          }));
-          return { success: true, data: list };
-        }
-        return { success: false, data: [], error: error.message };
-      }
-
-      if (data && Array.isArray(data)) {
-        let itemsFiltrados = data;
-
-        // Filtro por Ano / Mês
-        itemsFiltrados = itemsFiltrados.filter((item: any) => {
-          let itemAno = new Date().getFullYear();
-          let itemMes = new Date().getMonth() + 1;
-          if (item.data_relatorio) {
-            const clean = String(item.data_relatorio).split('T')[0];
-            const parts = clean.split('-');
-            if (parts.length === 3) {
-              itemAno = parseInt(parts[0], 10);
-              itemMes = parseInt(parts[1], 10);
-            }
-          }
-
-          if (!isTodosAnos && pAno !== null && itemAno !== pAno) return false;
-          if (pMes !== null && itemMes !== pMes) return false;
-          return true;
-        });
-
-        const list = itemsFiltrados.map((item: any, idx: number) => {
-          const l = converterItemParaLancamento(item, idx);
-          return {
-            id: String(item.id),
-            unidade_id: item.unidade_id ? String(item.unidade_id) : undefined,
-            celula_nome: String(l.celulaNome || 'Célula'),
-            lideres: String(l.liderCelula || '-'),
-            data_relatorio: String(item.data_relatorio || l.data),
-            valor_pix: Number(item.valor_pix ?? 0),
-            valor_especie: Number(item.valor_especie ?? 0),
-            tesouraria_recebido: item.tesouraria_recebido === true,
-            data_recebimento: item.data_recebimento || null,
-            tesoureiro_id: item.tesoureiro_id || null,
-            nome_tesoureiro: l.NomeTesoureiro || null,
-          };
-        });
-
-        return { success: true, data: list };
-      }
-
-      return { success: true, data: [] };
-    } catch (err: any) {
-      console.warn('Exceção ao buscar relatórios detalhados no banco inteiro:', err);
-      return { success: false, data: [], error: err?.message, isAuthError: false };
-    }
+  ): Promise<{ success: boolean; data: any[]; error?: string; isAuthError?: boolean }> {
+    const apiRes = await callTreasuryApi<any[]>('relatorios_detalhados', { ano, mes, setorId, somentePendentes });
+    if (apiRes.success && Array.isArray(apiRes.data)) return { success: true, data: apiRes.data };
+    return { success: false, data: [], error: apiRes.error, isAuthError: apiRes.authError };
   },
 
   /**
-   * RPC 3: tesouraria_resumo
-   * Retorna os contadores do topo da tela: { pendentes, confirmados }
-   * Calculado no banco inteiro baseado em tesouraria_recebido
+   * Contadores do topo da tela: { pendentes, confirmados } (via /api/treasury)
    */
   async rpcTesourariaResumo(
     ano: number | string,
@@ -786,87 +574,9 @@ export const TreasuryService = {
     error?: string;
     isAuthError?: boolean;
   }> {
-    try {
-      const apiRes = await callTreasuryApi('resumo', { ano, mes });
-      if (apiRes && apiRes.success && apiRes.data) {
-        return { success: true, data: apiRes.data };
-      }
-
-      const supabase = getSupabaseClient();
-      const isTodosAnos = String(ano).toLowerCase() === 'todos' || String(ano).toLowerCase() === 'todos os anos';
-      const pAno = isTodosAnos ? null : Number(ano) || new Date().getFullYear();
-      const pMes = mes !== null && mes !== undefined && mes !== 'todos' && mes !== '' ? Number(mes) : null;
-
-      // 1. Tenta RPC se ano específico
-      if (!isTodosAnos) {
-        try {
-          const { data, error } = await supabase.rpc('tesouraria_resumo', {
-            p_ano: pAno,
-            p_mes: pMes,
-          });
-
-          if (!error && data) {
-            let row = { pendentes: 0, confirmados: 0 };
-            if (Array.isArray(data) && data.length > 0) {
-              row = {
-                pendentes: Number(data[0].pendentes ?? 0),
-                confirmados: Number(data[0].confirmados ?? 0),
-              };
-            } else if (typeof data === 'object') {
-              row = {
-                pendentes: Number((data as any).pendentes ?? 0),
-                confirmados: Number((data as any).confirmados ?? 0),
-              };
-            }
-            if (row.pendentes > 0 || row.confirmados > 0) {
-              return { success: true, data: row };
-            }
-          }
-        } catch {}
-      }
-
-      // 2. Cálculo direto no banco de relatorios_semanais baseado em tesouraria_recebido
-      const { data: allRows, error: errAll } = await supabase
-        .from('relatorios_semanais')
-        .select('id, data_relatorio, tesouraria_recebido')
-        .limit(10000);
-
-      if (errAll) {
-        return { success: false, data: { pendentes: 0, confirmados: 0 }, error: errAll.message };
-      }
-
-      let pendentes = 0;
-      let confirmados = 0;
-
-      if (allRows && Array.isArray(allRows)) {
-        allRows.forEach((r: any) => {
-          let itemAno = new Date().getFullYear();
-          let itemMes = new Date().getMonth() + 1;
-          if (r.data_relatorio) {
-            const clean = String(r.data_relatorio).split('T')[0];
-            const parts = clean.split('-');
-            if (parts.length === 3) {
-              itemAno = parseInt(parts[0], 10);
-              itemMes = parseInt(parts[1], 10);
-            }
-          }
-
-          if (!isTodosAnos && pAno !== null && itemAno !== pAno) return;
-          if (pMes !== null && itemMes !== pMes) return;
-
-          if (r.tesouraria_recebido === true) {
-            confirmados++;
-          } else {
-            pendentes++;
-          }
-        });
-      }
-
-      return { success: true, data: { pendentes, confirmados } };
-    } catch (err: any) {
-      console.warn('Exceção tesouraria_resumo:', err);
-      return { success: false, data: { pendentes: 0, confirmados: 0 }, error: err?.message, isAuthError: false };
-    }
+    const apiRes = await callTreasuryApi<{ pendentes: number; confirmados: number }>('resumo', { ano, mes });
+    if (apiRes.success && apiRes.data) return { success: true, data: apiRes.data };
+    return { success: false, data: { pendentes: 0, confirmados: 0 }, error: apiRes.error, isAuthError: apiRes.authError };
   },
 
   /**
@@ -877,11 +587,11 @@ export const TreasuryService = {
   ): Promise<{ success: boolean; data: string[]; error?: string }> {
     try {
       const supabase = getSupabaseClient();
-      let query = supabase.from('unidades').select('*');
+      // Só as colunas usadas (nunca select('*'): evita trazer fotos e campos pesados)
+      let query = supabase.from('unidades').select('id, nome');
 
       if (igrejaId && String(igrejaId).trim()) {
-        const idStr = String(igrejaId).trim();
-        query = query.eq('igreja_id', idStr);
+        query = query.eq('igreja_id', String(igrejaId).trim());
       }
 
       const { data, error } = await query;
@@ -890,20 +600,12 @@ export const TreasuryService = {
         return { success: false, data: [], error: error.message };
       }
 
-      if (data && Array.isArray(data)) {
-        const setoresSet = new Set<string>();
-        data.forEach((u: any) => {
-          const nome = String(
-            u.nome || u.nome_unidade || u.setor || u.titulo || u.descricao || u.name || ''
-          ).trim();
-          if (nome && nome !== '-' && nome !== 'undefined' && nome !== 'null') {
-            setoresSet.add(nome);
-          }
-        });
-        return { success: true, data: Array.from(setoresSet).sort() };
-      }
-
-      return { success: true, data: [] };
+      const setoresSet = new Set<string>();
+      (data || []).forEach((u: any) => {
+        const nome = String(u.nome || '').trim();
+        if (nome && nome !== '-' && nome !== 'undefined' && nome !== 'null') setoresSet.add(nome);
+      });
+      return { success: true, data: Array.from(setoresSet).sort() };
     } catch (err: any) {
       console.warn('Erro ao consultar unidades no Supabase:', err);
       return { success: false, data: [], error: err.message };
@@ -911,21 +613,22 @@ export const TreasuryService = {
   },
 
   /**
-   * Valida relatório no Supabase (UPDATE controlado por RLS)
+   * Valida relatório (via /api/treasury). O tesoureiro registrado é o usuário logado,
+   * identificado pelo servidor a partir da sessão.
    */
   async confirmarLancamento(
     relatorioId: string,
-    userIdLogado: string | number = '1',
+    userIdLogado: string | number = '',
     dataTesouraria?: string,
     nomeTesoureiro?: string
   ): Promise<{ success: boolean; error?: string }> {
+    const res = await callTreasuryApi('confirmar_individual', { id: relatorioId });
+    if (!res.success) return { success: false, error: res.error };
+
     const nowIso = new Date().toISOString();
     const pad = (n: number) => String(n).padStart(2, '0');
     const d = new Date();
     const dataBR = dataTesouraria || `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}`;
-    const nomeFinal = nomeTesoureiro || 'Tesoureiro';
-
-    // Atualização otimista em memória
     if (memoryLancamentos) {
       memoryLancamentos = memoryLancamentos.map((l) =>
         l.id === relatorioId || String(l.ID) === relatorioId
@@ -938,61 +641,21 @@ export const TreasuryService = {
               data_recebimento: nowIso,
               ID_TESOUREIRO: userIdLogado,
               tesoureiro_id: userIdLogado,
-              NomeTesoureiro: nomeFinal,
+              NomeTesoureiro: nomeTesoureiro || 'Tesoureiro',
             }
           : l
       );
     }
-
-    try {
-      const apiRes = await callTreasuryApi('confirmar_individual', { id: relatorioId, userId: userIdLogado });
-      if (apiRes && apiRes.success) {
-        return { success: true };
-      }
-
-      const isUUID = UUID_REGEX.test(relatorioId);
-      if (isUUID) {
-        const supabase = getSupabaseClient();
-        const { error } = await supabase
-          .from('relatorios_semanais')
-          .update({
-            tesouraria_recebido: true,
-            data_recebimento: nowIso,
-            tesoureiro_id: String(userIdLogado),
-            atualizado_em: nowIso,
-          })
-          .eq('id', relatorioId);
-
-        if (error) {
-          if (
-            error.code === '42501' ||
-            error.message?.includes('row-level security') ||
-            error.message?.includes('permission denied')
-          ) {
-            return {
-              success: false,
-              error:
-                'Você não possui permissão de tesouraria cadastrada para validar relatórios. Solicite a liberação à liderança da igreja.',
-            };
-          }
-          console.warn('Erro ao confirmar no Supabase:', error.message);
-          return { success: false, error: error.message };
-        }
-      }
-      return { success: true };
-    } catch (err: any) {
-      console.warn('Erro ao confirmar relatório no Supabase:', err);
-      return { success: false, error: err?.message || 'Falha ao confirmar relatório.' };
-    }
+    return { success: true };
   },
 
   /**
-   * Desfaz validação de relatório (UPDATE com tesouraria_recebido: false)
+   * Desfaz validação de relatório (via /api/treasury)
    */
   async desconfirmarLancamento(relatorioId: string): Promise<{ success: boolean; error?: string }> {
-    const nowIso = new Date().toISOString();
+    const res = await callTreasuryApi('desconfirmar_individual', { id: relatorioId });
+    if (!res.success) return { success: false, error: res.error };
 
-    // Atualização otimista em memória
     if (memoryLancamentos) {
       memoryLancamentos = memoryLancamentos.map((l) =>
         l.id === relatorioId || String(l.ID) === relatorioId
@@ -1009,51 +672,11 @@ export const TreasuryService = {
           : l
       );
     }
-
-    try {
-      const apiRes = await callTreasuryApi('desconfirmar_individual', { id: relatorioId });
-      if (apiRes && apiRes.success) {
-        return { success: true };
-      }
-
-      const isUUID = UUID_REGEX.test(relatorioId);
-      if (isUUID) {
-        const supabase = getSupabaseClient();
-        const { error } = await supabase
-          .from('relatorios_semanais')
-          .update({
-            tesouraria_recebido: false,
-            data_recebimento: null,
-            tesoureiro_id: null,
-            atualizado_em: nowIso,
-          })
-          .eq('id', relatorioId);
-
-        if (error) {
-          if (
-            error.code === '42501' ||
-            error.message?.includes('row-level security') ||
-            error.message?.includes('permission denied')
-          ) {
-            return {
-              success: false,
-              error:
-                'Você não possui permissão de tesouraria cadastrada para reverter validações. Solicite a liberação à liderança da igreja.',
-            };
-          }
-          console.warn('Erro ao desconfirmar no Supabase:', error.message);
-          return { success: false, error: error.message };
-        }
-      }
-      return { success: true };
-    } catch (err: any) {
-      console.warn('Erro ao desconfirmar relatório no Supabase:', err);
-      return { success: false, error: err?.message || 'Falha ao desconfirmar relatório.' };
-    }
+    return { success: true };
   },
 
   /**
-   * Edita dados de um relatório (Data, PIX, Espécie, Observação)
+   * Edita os valores (PIX e espécie) de um relatório (via /api/treasury)
    */
   async editarLancamento(
     id: string,
@@ -1065,15 +688,18 @@ export const TreasuryService = {
       total: number;
     }
   ): Promise<{ success: boolean; error?: string }> {
+    const res = await callTreasuryApi('atualizar_valores', {
+      id,
+      valorPix: dados.pix,
+      valorEspecie: dados.especie,
+    });
+    if (!res.success) return { success: false, error: res.error };
+
     if (memoryLancamentos) {
       memoryLancamentos = memoryLancamentos.map((l) =>
         l.id === id || String(l.ID) === id
           ? {
               ...l,
-              celulaNome: dados.celula,
-              Célula: dados.celula,
-              dataBR: dados.data,
-              data: dados.data,
               valorPix: dados.pix,
               ValorOferta: dados.pix,
               valorEspecie: dados.especie,
@@ -1084,53 +710,22 @@ export const TreasuryService = {
           : l
       );
     }
-
-    try {
-      const apiRes = await callTreasuryApi('atualizar_valores', {
-        id,
-        valorPix: dados.pix,
-        valorEspecie: dados.especie,
-      });
-      if (apiRes && apiRes.success) {
-        return { success: true };
-      }
-
-      const isUUID = UUID_REGEX.test(id);
-      if (isUUID) {
-        const supabase = getSupabaseClient();
-        const { error } = await supabase
-          .from('relatorios_semanais')
-          .update({
-            data_relatorio: dados.data,
-            valor_pix: dados.pix,
-            valor_especie: dados.especie,
-            observacao: dados.celula,
-            atualizado_em: new Date().toISOString(),
-          })
-          .eq('id', id);
-
-        if (error) {
-          console.warn('Erro ao editar relatório no Supabase:', error.message);
-          return { success: false, error: error.message };
-        }
-      }
-      return { success: true };
-    } catch (err: any) {
-      console.warn('Erro ao editar relatório no Supabase:', err);
-      return { success: false, error: err?.message || 'Falha ao editar relatório.' };
-    }
+    return { success: true };
   },
 
   /**
-   * Valida relatórios em lote no Supabase
+   * Valida relatórios em lote (via /api/treasury)
    */
   async confirmarLancamentosEmMassa(
     ids: string[],
-    userIdLogado: string | number = '1'
+    userIdLogado: string | number = ''
   ): Promise<{ success: boolean; count?: number; error?: string }> {
     if (!Array.isArray(ids) || ids.length === 0) return { success: true, count: 0 };
-    const nowIso = new Date().toISOString();
 
+    const res = await callTreasuryApi('confirmar_massa', { ids });
+    if (!res.success) return { success: false, error: res.error };
+
+    const nowIso = new Date().toISOString();
     if (memoryLancamentos) {
       const idSet = new Set(ids);
       memoryLancamentos = memoryLancamentos.map((l) =>
@@ -1147,67 +742,20 @@ export const TreasuryService = {
           : l
       );
     }
-
-    try {
-      const apiRes = await callTreasuryApi('confirmar_massa', { ids, userId: userIdLogado });
-      if (apiRes && apiRes.success) {
-        return { success: true, count: apiRes.count || ids.length };
-      }
-
-      const supabase = getSupabaseClient();
-      const { error } = await supabase
-        .from('relatorios_semanais')
-        .update({
-          tesouraria_recebido: true,
-          data_recebimento: nowIso,
-          tesoureiro_id: String(userIdLogado),
-          atualizado_em: nowIso,
-        })
-        .in('id', ids);
-
-      if (error) {
-        console.warn('Erro ao confirmar em massa no Supabase:', error.message);
-        return { success: false, error: error.message };
-      }
-      return { success: true, count: ids.length };
-    } catch (err: any) {
-      console.warn('Erro ao confirmar em massa:', err);
-      return { success: false, error: err?.message || 'Falha ao confirmar relatórios em lote.' };
-    }
+    return { success: true, count: res.count ?? ids.length };
   },
 
   /**
-   * Exclui um relatório
+   * Exclui um relatório (via /api/treasury)
    */
   async excluirLancamento(id: string): Promise<{ success: boolean; error?: string }> {
+    const res = await callTreasuryApi('excluir', { id });
+    if (!res.success) return { success: false, error: res.error };
+
     if (memoryLancamentos) {
       memoryLancamentos = memoryLancamentos.filter((l) => l.id !== id && String(l.ID) !== id);
     }
-
-    try {
-      const apiRes = await callTreasuryApi('excluir', { id });
-      if (apiRes && apiRes.success) {
-        return { success: true };
-      }
-
-      const isUUID = UUID_REGEX.test(id);
-      if (isUUID) {
-        const supabase = getSupabaseClient();
-        const { error } = await supabase
-          .from('relatorios_semanais')
-          .delete()
-          .eq('id', id);
-
-        if (error) {
-          console.warn('Erro ao excluir no Supabase:', error.message);
-          return { success: false, error: error.message };
-        }
-      }
-      return { success: true };
-    } catch (err: any) {
-      console.warn('Erro ao excluir relatório no Supabase:', err);
-      return { success: false, error: err?.message || 'Falha ao excluir relatório.' };
-    }
+    return { success: true };
   },
 
   /**

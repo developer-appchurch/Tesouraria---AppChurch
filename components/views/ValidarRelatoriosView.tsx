@@ -107,6 +107,16 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
   // Estados de carregamento controlados para evitar qualquer piscar de tela
   const [isCarregandoGeral, setIsCarregandoGeral] = useState<boolean>(() => !globalValidarCache);
   const [isAtualizandoTabela, setIsAtualizandoTabela] = useState<boolean>(false);
+  const [erroCarregamento, setErroCarregamento] = useState<string | null>(null);
+  // Recarregamento manual ("Tentar de novo") sem depender do botão global de atualizar
+  const [tentativaManual, setTentativaManual] = useState<number>(0);
+
+  // Mantém a função de aviso numa ref: assim o efeito de carregamento NÃO roda de novo
+  // só porque a página re-renderizou (era isso que causava o loop de consultas).
+  const onShowToastRef = useRef(onShowToast);
+  useEffect(() => {
+    onShowToastRef.current = onShowToast;
+  }, [onShowToast]);
 
   // Seleção para ações em lote
   const [selecionados, setSelecionados] = useState<Set<string>>(new Set());
@@ -218,24 +228,23 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
       }
 
       try {
-        // Busca completa dos dados do período em paralelo
-        const [resumoRes, setoresRes, relatoriosRes] = await Promise.all([
-          TreasuryService.rpcTesourariaResumo(pAno, pMes),
-          TreasuryService.rpcTesourariaSetoresPendencias(pAno, pMes),
-          TreasuryService.rpcTesourariaRelatoriosDetalhados(pAno, pMes, null, null),
-        ]);
+        // UMA chamada por período: resumo, setores e relatórios vêm juntos do servidor
+        const res = await TreasuryService.fetchPainelValidacao(pAno, pMes);
 
         if (isCancelled) return;
 
-        if (resumoRes.isAuthError || setoresRes.isAuthError || relatoriosRes.isAuthError) {
-          onShowToast('Sessão expirada ou sem permissão de tesouraria. Faça login novamente.');
+        if (!res.success || !res.data) {
+          // Sem novas tentativas automáticas: mostra o erro e espera o usuário pedir de novo
+          const msg = res.isAuthError
+            ? 'Sessão expirada ou sem permissão de tesouraria. Faça login novamente.'
+            : res.error || 'Erro ao carregar dados do servidor.';
+          setErroCarregamento(msg);
+          onShowToastRef.current(msg);
           return;
         }
 
-        const newResumo = resumoRes.success ? resumoRes.data : { pendentes: 0, confirmados: 0 };
-        const newSetores = setoresRes.success ? setoresRes.data : [];
-        const newRelatorios = relatoriosRes.success ? relatoriosRes.data : [];
-
+        const { resumo: newResumo, setores: newSetores, relatorios: newRelatorios } = res.data;
+        setErroCarregamento(null);
         setResumoContadores(newResumo);
         setSetoresList(newSetores);
         setRelatorios(newRelatorios);
@@ -251,7 +260,8 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
       } catch (err: any) {
         if (!isCancelled) {
           console.warn('Erro ao carregar dados de tesouraria:', err);
-          onShowToast('Erro ao carregar dados do servidor.');
+          setErroCarregamento('Erro ao carregar dados do servidor.');
+          onShowToastRef.current('Erro ao carregar dados do servidor.');
         }
       } finally {
         if (!isCancelled) {
@@ -266,7 +276,13 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
     return () => {
       isCancelled = true;
     };
-  }, [anoSelecionado, isTodosAnos, mesFiltro, isRefreshing, onShowToast]);
+  }, [anoSelecionado, isTodosAnos, mesFiltro, isRefreshing, tentativaManual]);
+
+  const tentarCarregarDeNovo = useCallback(() => {
+    globalValidarCache = null;
+    setErroCarregamento(null);
+    setTentativaManual((n) => n + 1);
+  }, []);
 
   // Soma de pendências de todas as abas de setores para a aba "Todos"
   const totalPendentesSoma = useMemo(() => {
@@ -759,6 +775,22 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
                     <div className="flex items-center justify-center gap-2">
                       <Loader2 className="w-5 h-5 animate-spin text-indigo-400" />
                       <span>Carregando relatórios da igreja...</span>
+                    </div>
+                  </td>
+                </tr>
+              ) : erroCarregamento && relatorios.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="text-center py-12 text-sm bg-[#13192f]">
+                    <div className="flex flex-col items-center justify-center gap-3">
+                      <span className="text-rose-300">{erroCarregamento}</span>
+                      <button
+                        type="button"
+                        onClick={tentarCarregarDeNovo}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold cursor-pointer"
+                      >
+                        <RotateCw className="w-3.5 h-3.5" />
+                        Tentar de novo
+                      </button>
                     </div>
                   </td>
                 </tr>

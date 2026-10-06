@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo, useSyncExternalStore } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useSyncExternalStore } from 'react';
 import { Sidebar } from '@/components/Sidebar';
 import { Header } from '@/components/Header';
 import { LoginView } from '@/components/views/LoginView';
@@ -66,36 +66,48 @@ export default function TreasuryApp() {
     return null;
   }, [isLoggedOut, sessaoManual, storedUserJson]);
 
-  const showToast = (msg: string) => {
+  // Estável entre renderizações: as telas podem usá-la sem disparar recarregamentos
+  const showToast = useCallback((msg: string) => {
     setNotificacao(msg);
     setTimeout(() => {
       setNotificacao(null);
     }, 3500);
-  };
+  }, []);
 
-  // Initial fetch from Supabase
+  // Carrega relatórios e permissões (só com usuário logado — a API exige sessão)
+  const carregarDados = useCallback(
+    async (forcar: boolean) => {
+      const [relResult, permResult] = await Promise.all([
+        TreasuryService.fetchRelatorios(forcar),
+        TreasuryService.fetchPermissoes(forcar),
+      ]);
+      if (relResult.error) {
+        showToast(
+          relResult.isAuthError
+            ? 'Sessão expirada ou sem permissão de tesouraria. Faça login novamente.'
+            : relResult.error
+        );
+      } else {
+        setLancamentos(relResult.data || []);
+      }
+      if (permResult.data) {
+        setUsuarios(permResult.data);
+      }
+      return !relResult.error;
+    },
+    [showToast]
+  );
+
+  // Carregamento inicial: só busca dados se já houver sessão salva
   useEffect(() => {
     let isSubscribed = true;
 
     const fetchInitial = async () => {
       try {
         const user = await TreasuryService.getSessionUser();
-        if (user && isSubscribed) {
-          setSessaoManual(user);
-        }
-
-        const [relResult, permResult] = await Promise.all([
-          TreasuryService.fetchRelatorios(false),
-          TreasuryService.fetchPermissoes(false),
-        ]);
-        if (isSubscribed) {
-          if (relResult.data) {
-            setLancamentos(relResult.data);
-          }
-          if (permResult.data) {
-            setUsuarios(permResult.data);
-          }
-        }
+        if (!user || !isSubscribed) return;
+        setSessaoManual(user);
+        await carregarDados(false);
       } catch (err) {
         console.warn('Erro ao carregar dados do Supabase:', err);
       } finally {
@@ -110,18 +122,13 @@ export default function TreasuryApp() {
     return () => {
       isSubscribed = false;
     };
-  }, []);
+  }, [carregarDados]);
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
     try {
-      const [relResult, permResult] = await Promise.all([
-        TreasuryService.fetchRelatorios(true),
-        TreasuryService.fetchPermissoes(true),
-      ]);
-      setLancamentos(relResult.data || []);
-      setUsuarios(permResult.data || []);
-      showToast('Dados sincronizados com o Supabase com sucesso!');
+      const ok = await carregarDados(true);
+      if (ok) showToast('Dados sincronizados com o Supabase com sucesso!');
     } catch (err) {
       console.warn('Erro ao atualizar dados:', err);
     } finally {
@@ -137,6 +144,8 @@ export default function TreasuryApp() {
     setIsLoggedOut(false);
     setCurrentView('validar-relatorios');
     showToast(`Bem-vindo, ${membro.nome}!`);
+    // A sessão acabou de ser criada: agora sim busca os dados
+    carregarDados(true);
   };
 
   const handleLogout = async () => {
