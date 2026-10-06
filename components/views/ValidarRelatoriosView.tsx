@@ -690,14 +690,14 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
 
       {/* 1. ABAS DE FILTRO DE SETORES */}
       <div className="overflow-x-auto scrollbar-thin py-2 px-1 -mx-1">
-        <div className="flex items-center gap-3 min-w-max text-[13px] font-medium">
+        <div className="flex items-center gap-2 min-w-max text-xs font-semibold">
           {/* Aba fixa "Todos" */}
           <button
             onClick={() => setSetorSelecionadoId(null)}
-            className={`cursor-pointer transition-all shrink-0 ${
+            className={`px-3 py-1.5 rounded-md border text-xs font-semibold cursor-pointer transition-colors shrink-0 ${
               setorSelecionadoId === null
-                ? 'px-3 py-1 rounded-md bg-[#18203a] text-white font-bold border border-[#324370] shadow-xs'
-                : 'text-slate-400 hover:text-white px-1 py-0.5'
+                ? 'bg-[#18203a] text-white border-[#324370] shadow-xs'
+                : 'bg-transparent text-slate-400 hover:text-white hover:bg-[#141a2e] border-transparent'
             }`}
           >
             Todos ({totalPendentesSoma})
@@ -714,10 +714,10 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
               <React.Fragment key={setor.setor_id}>
                 <button
                   onClick={() => setSetorSelecionadoId(isSelected ? null : setor.setor_id)}
-                  className={`cursor-pointer transition-all shrink-0 ${
+                  className={`px-3 py-1.5 rounded-md border text-xs font-semibold cursor-pointer transition-colors shrink-0 ${
                     isSelected
-                      ? 'px-3 py-1 rounded-md bg-[#18203a] text-white font-bold border border-[#324370] shadow-xs'
-                      : 'text-slate-400 hover:text-white px-1 py-0.5'
+                      ? 'bg-[#18203a] text-white border-[#324370] shadow-xs'
+                      : 'bg-transparent text-slate-400 hover:text-white hover:bg-[#141a2e] border-transparent'
                   }`}
                 >
                   {setor.setor_nome} ({setor.qtd_pendentes})
@@ -733,22 +733,16 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
 
       {/* 2. TABELA PRINCIPAL DE RELATÓRIOS (Sem piscar) */}
       <div className="rounded-xl overflow-hidden border border-[#263155] bg-[#101528] shadow-md relative">
-        {/* Indicador sutil de transição entre setores sem desmontar a tabela */}
-        {isAtualizandoTabela && (
-          <div className="absolute top-0 left-0 right-0 h-0.5 bg-indigo-500 animate-pulse z-10"></div>
-        )}
-
         <div className="overflow-x-auto scrollbar-thin">
           <table className="w-full text-xs text-left min-w-[780px]">
             <thead className="bg-[#101528] text-slate-300 uppercase tracking-wider text-[11px] border-b border-[#263155]">
               <tr>
-                <th className="px-5 py-3.5 font-bold">CÉLULA</th>
-                <th className="px-4 py-3.5 font-bold text-center">DATA</th>
-                <th className="px-4 py-3.5 font-bold text-right">PIX</th>
-                <th className="px-4 py-3.5 font-bold text-right">ESPÉCIE</th>
-                <th className="px-4 py-3.5 font-bold text-center">TOTAL</th>
-                <th className="px-3 py-3.5 font-bold text-center text-slate-500">-</th>
-                <th className="px-3 py-3.5 font-bold text-center w-10">
+                <th className="px-5 py-3.5 font-bold w-64 min-w-[240px] max-w-[320px]">CÉLULA</th>
+                <th className="px-4 py-3.5 font-bold text-center w-28">DATA</th>
+                <th className="px-4 py-3.5 font-bold text-right w-28">PIX</th>
+                <th className="px-4 py-3.5 font-bold text-right w-28">ESPÉCIE</th>
+                <th className="px-4 py-3.5 font-bold text-center w-32">TOTAL</th>
+                <th className="px-3 py-3.5 font-bold text-center w-12">
                   <button
                     onClick={toggleSelecionarTodos}
                     className="cursor-pointer text-slate-400 hover:text-white"
@@ -761,17 +755,13 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
                     )}
                   </button>
                 </th>
-                <th className="px-5 py-3.5 font-bold text-center">AÇÕES</th>
+                <th className="px-5 py-3.5 font-bold text-center w-52">AÇÕES</th>
               </tr>
             </thead>
-            <tbody
-              className={`divide-y divide-[#cbd5e1] transition-opacity duration-150 ${
-                isAtualizandoTabela ? 'opacity-70' : 'opacity-100'
-              }`}
-            >
+            <tbody className="divide-y divide-[#cbd5e1]">
               {isCarregandoGeral ? (
                 <tr>
-                  <td colSpan={8} className="text-center py-12 text-slate-400 text-sm bg-[#13192f]">
+                  <td colSpan={7} className="text-center py-12 text-slate-400 text-sm bg-[#13192f]">
                     <div className="flex items-center justify-center gap-2">
                       <Loader2 className="w-5 h-5 animate-spin text-indigo-400" />
                       <span>Carregando relatórios da igreja...</span>
@@ -780,7 +770,7 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
                 </tr>
               ) : erroCarregamento && relatorios.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="text-center py-12 text-sm bg-[#13192f]">
+                  <td colSpan={7} className="text-center py-12 text-sm bg-[#13192f]">
                     <div className="flex flex-col items-center justify-center gap-3">
                       <span className="text-rose-300">{erroCarregamento}</span>
                       <button
@@ -796,7 +786,7 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
                 </tr>
               ) : relatoriosFiltrados.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="text-center py-12 text-slate-400 text-sm bg-[#13192f]">
+                  <td colSpan={7} className="text-center py-12 text-slate-400 text-sm bg-[#13192f]">
                     {tabAtiva === 'pendentes'
                       ? 'Nenhum relatório pendente de validação para o filtro selecionado.'
                       : 'Nenhum relatório confirmado encontrado para o filtro selecionado.'}
@@ -828,8 +818,8 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
                       }`}
                     >
                       {/* Célula */}
-                      <td className="px-5 py-3.5 font-extrabold text-slate-950 text-sm">
-                        <div className="tracking-tight">{celulaNome}</div>
+                      <td className="px-5 py-3.5 font-extrabold text-slate-950 text-sm w-64 min-w-[240px] max-w-[320px]">
+                        <div className="tracking-tight truncate">{celulaNome}</div>
                         {isConfirmado && (
                           <div className="text-[11px] font-normal text-slate-600 flex flex-wrap items-center gap-1.5 mt-0.5">
                             <span className="font-bold bg-emerald-100 text-emerald-800 border border-emerald-300/70 px-2 py-0.2 rounded text-[10px] inline-flex items-center gap-1">
@@ -859,11 +849,6 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
                         <span className="bg-[#161c32] text-white font-black text-xs px-3 py-1 rounded-md inline-block min-w-[76px] text-center shadow-2xs">
                           {formatBRL(total)}
                         </span>
-                      </td>
-
-                      {/* Traço divisor (-) */}
-                      <td className="px-3 py-3.5 text-center text-slate-400 font-bold">
-                        -
                       </td>
 
                       {/* Checkbox de Seleção */}
