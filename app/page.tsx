@@ -74,11 +74,21 @@ export default function TreasuryApp() {
     }, 3500);
   }, []);
 
-  // Carrega relatórios do ano ativo de forma otimizada (sem varrer o banco todo)
+  // Ano dos dados = ano escolhido na tela aberta (cada tela tem o seu seletor).
+  // "Todos os anos" busca todos os anos; o serviço guarda cada período em cache separado.
+  const anoDados =
+    currentView === 'relacao-envelopes'
+      ? anoEnvelopes
+      : currentView === 'dashboard'
+      ? anoDashboard
+      : anoValidar;
+  const periodoDados: number | string =
+    String(anoDados).toLowerCase().startsWith('todos') ? 'todos' : Number(anoDados) || new Date().getFullYear();
+
+  // Carrega só o período da tela ativa (sem varrer o banco todo)
   const carregarDados = useCallback(
     async (forcar: boolean) => {
-      const anoAlvo = anoValidar === 'todos' ? new Date().getFullYear() : Number(anoValidar) || new Date().getFullYear();
-      const relResult = await TreasuryService.fetchRelatorios(forcar, anoAlvo);
+      const relResult = await TreasuryService.fetchRelatorios(forcar, periodoDados);
       if (relResult.error) {
         showToast(
           relResult.isAuthError
@@ -90,7 +100,7 @@ export default function TreasuryApp() {
       }
       return !relResult.error;
     },
-    [anoValidar, showToast]
+    [periodoDados, showToast]
   );
 
   // Carregamento inicial: só busca dados se já houver sessão salva

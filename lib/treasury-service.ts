@@ -6,6 +6,24 @@ import { LISTA_CELULAS } from './celulas-data';
 let memoryLancamentos: LancamentoTesouraria[] | null = null;
 let memoryPermissoes: PermissaoUsuario[] | null = null;
 let lastLancamentosFetch = 0;
+// Cache de relatórios por período ("ano|mes"): trocar de ano não devolve dados de outro ano
+const relatoriosCache = new Map<string, { data: LancamentoTesouraria[]; at: number }>();
+let chaveLancamentosAtual: string | null = null;
+
+function chavePeriodo(ano: number | string, mes?: number | string | null): string {
+  const a = String(ano ?? '').toLowerCase();
+  const anoNorm = !a || a === 'todos' || a === 'todos os anos' ? 'todos' : String(Number(ano) || ano);
+  const mesNorm = mes === null || mes === undefined || mes === '' || mes === 'todos' ? 'todos' : String(Number(mes));
+  return `${anoNorm}|${mesNorm}`;
+}
+
+/** Depois de validar/editar/excluir: mantém só o período atual (já atualizado) e descarta os demais. */
+function sincronizarCacheRelatorios() {
+  relatoriosCache.clear();
+  if (memoryLancamentos && chaveLancamentosAtual) {
+    relatoriosCache.set(chaveLancamentosAtual, { data: memoryLancamentos, at: lastLancamentosFetch });
+  }
+}
 let lastPermissoesFetch = 0;
 let memoryUnidades: UnidadeCadastrada[] | null = null;
 let lastUnidadesFetch = 0;
@@ -336,6 +354,8 @@ export const TreasuryService = {
    */
   clearCache() {
     memoryLancamentos = null;
+    relatoriosCache.clear();
+    chaveLancamentosAtual = null;
     memoryPermissoes = null;
     memoryUnidades = null;
     lastLancamentosFetch = 0;
@@ -510,8 +530,13 @@ export const TreasuryService = {
     mes?: number | string | null
   ): Promise<{ data: LancamentoTesouraria[]; error?: string; isAuthError?: boolean }> {
     const now = Date.now();
-    if (!forceRefresh && memoryLancamentos && now - lastLancamentosFetch < CACHE_TTL_MS) {
-      return { data: memoryLancamentos };
+    const chave = chavePeriodo(ano, mes);
+    const emCache = relatoriosCache.get(chave);
+    if (!forceRefresh && emCache && now - emCache.at < CACHE_TTL_MS) {
+      memoryLancamentos = emCache.data;
+      lastLancamentosFetch = emCache.at;
+      chaveLancamentosAtual = chave;
+      return { data: emCache.data };
     }
 
     const apiRes = await callTreasuryApi<any[]>('relatorios_detalhados', { ano, mes });
@@ -519,9 +544,12 @@ export const TreasuryService = {
       const formatted = apiRes.data.map((item: any, idx: number) => converterItemParaLancamento(item, idx));
       memoryLancamentos = formatted;
       lastLancamentosFetch = now;
+      chaveLancamentosAtual = chave;
+      relatoriosCache.set(chave, { data: formatted, at: now });
       return { data: formatted };
     }
-    return { data: memoryLancamentos || [], error: apiRes.error, isAuthError: apiRes.authError };
+    // Em erro, nunca devolve dados de outro período como se fossem deste
+    return { data: emCache?.data || [], error: apiRes.error, isAuthError: apiRes.authError };
   },
 
   /**
@@ -683,6 +711,7 @@ export const TreasuryService = {
           : l
       );
     }
+    sincronizarCacheRelatorios();
     return { success: true };
   },
 
@@ -709,6 +738,7 @@ export const TreasuryService = {
           : l
       );
     }
+    sincronizarCacheRelatorios();
     return { success: true };
   },
 
@@ -747,6 +777,7 @@ export const TreasuryService = {
           : l
       );
     }
+    sincronizarCacheRelatorios();
     return { success: true };
   },
 
@@ -779,6 +810,7 @@ export const TreasuryService = {
           : l
       );
     }
+    sincronizarCacheRelatorios();
     return { success: true, count: res.count ?? ids.length };
   },
 
@@ -792,6 +824,7 @@ export const TreasuryService = {
     if (memoryLancamentos) {
       memoryLancamentos = memoryLancamentos.filter((l) => l.id !== id && String(l.ID) !== id);
     }
+    sincronizarCacheRelatorios();
     return { success: true };
   },
 
