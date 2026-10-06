@@ -50,8 +50,8 @@ export default function TreasuryApp() {
   const [anoDashboard, setAnoDashboard] = useState<number | string>(2026);
   const [anoValidar, setAnoValidar] = useState<number | string>(2026);
   const [anoEnvelopes, setAnoEnvelopes] = useState<number | string>(2026);
-  const [mesEnvelopes, setMesEnvelopes] = useState<string>('todos');
-  const [setorEnvelopes, setSetorEnvelopes] = useState<string>('todos');
+  const [mesEnvelopes, setMesEnvelopes] = useState<string>(() => String(new Date().getMonth() + 1));
+  const [setorEnvelopes, setSetorEnvelopes] = useState<string>('Safira');
 
   // Compute active user safely across SSR and Client
   const usuarioLogado = useMemo(() => {
@@ -250,19 +250,20 @@ export default function TreasuryApp() {
 
         {/* Dynamic Views */}
         <main className="flex-1 overflow-y-auto bg-[#1a1d2e] relative">
-          {viewEfetiva === 'validar-relatorios' && (
+          <div className={viewEfetiva === 'validar-relatorios' ? 'block min-h-full' : 'hidden'}>
             <ValidarRelatoriosView
               lancamentos={lancamentos}
               anoSelecionado={anoValidar}
               onSelectAno={setAnoValidar}
               onRefresh={handleRefresh}
+              isRefreshing={isRefreshing}
               onShowToast={showToast}
               usuarioLogado={usuarioLogado}
               usuarios={usuarios}
             />
-          )}
+          </div>
 
-          {viewEfetiva === 'relacao-envelopes' && (
+          <div className={viewEfetiva === 'relacao-envelopes' ? 'block min-h-full' : 'hidden'}>
             <RelacaoEnvelopesView
               lancamentos={lancamentos}
               anoSelecionado={anoEnvelopes}
@@ -274,9 +275,9 @@ export default function TreasuryApp() {
               onRefresh={handleRefresh}
               onShowToast={showToast}
             />
-          )}
+          </div>
 
-          {viewEfetiva === 'dashboard' && (
+          <div className={viewEfetiva === 'dashboard' ? 'block min-h-full' : 'hidden'}>
             <DashboardView
               lancamentos={lancamentos}
               anoSelecionado={anoDashboard}
@@ -286,15 +287,15 @@ export default function TreasuryApp() {
               onToggleMobileMenu={() => setIsMobileNavOpen((prev) => !prev)}
               onShowToast={showToast}
             />
-          )}
+          </div>
 
-          {viewEfetiva === 'permissoes' && (
+          <div className={viewEfetiva === 'permissoes' ? 'block min-h-full' : 'hidden'}>
             <PermissoesView
               usuarios={usuarios}
               onRefresh={handleRefresh}
               onShowToast={showToast}
             />
-          )}
+          </div>
         </main>
       </div>
     </div>

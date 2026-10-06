@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import { LancamentoTesouraria } from '@/lib/types';
 import { formatBRL, formatDateBR } from '@/lib/utils';
-import { TreasuryService } from '@/lib/treasury-service';
+import { TreasuryService, MAPA_CELULAS_SETORES } from '@/lib/treasury-service';
 
 interface RelacaoEnvelopesViewProps {
   lancamentos: LancamentoTesouraria[];
@@ -31,7 +31,7 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
   lancamentos = [],
   anoSelecionado,
   mesSelecionado = '10',
-  setorSelecionado = 'todos',
+  setorSelecionado = 'Safira',
   onRefresh,
   onShowToast,
 }) => {
@@ -53,29 +53,61 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
     setorSelecionado.toLowerCase() === 'todos' ||
     setorSelecionado.toLowerCase() === 'todos os setores';
 
-  // 1. Extrair células exclusivamente dos lançamentos reais do banco de dados (O(N))
+  const anoNumFiltro =
+    anoSelecionado && String(anoSelecionado).toLowerCase() !== 'todos'
+      ? Number(anoSelecionado)
+      : null;
+  const mesNumFiltro =
+    mesSelecionado && mesSelecionado !== 'todos'
+      ? Number(mesSelecionado)
+      : null;
+
+  // 1. Extrair células do setor a partir do catálogo oficial e dos lançamentos reais
   const celulasDoSetor = useMemo(() => {
     const celulasMap = new Map<string, { id: string; nome: string; lider: string; setor: string }>();
+    const setorAlvo = (setorSelecionado || 'Safira').trim().toLowerCase();
 
+    // 1.1 Adiciona células conhecidas do catálogo oficial
+    Object.entries(MAPA_CELULAS_SETORES).forEach(([nomeLower, setorOficial]) => {
+      if (isTodosSetores || setorOficial.toLowerCase() === setorAlvo) {
+        const nomeFormatado = nomeLower.charAt(0).toUpperCase() + nomeLower.slice(1);
+        const key = `${setorOficial.toLowerCase()}___${nomeLower}`;
+        if (!celulasMap.has(key)) {
+          celulasMap.set(key, {
+            id: key,
+            nome: nomeFormatado,
+            lider: '-',
+            setor: setorOficial,
+          });
+        }
+      }
+    });
+
+    // 1.2 Atualiza com as células e líderes reais dos lançamentos
     for (let i = 0; i < lancamentos.length; i++) {
       const l = lancamentos[i];
       const nome = (l.Célula || l.celulaNome || '').trim();
-      const setor = (l.Setor || l.setor || 'Safira').trim();
       if (!nome) continue;
 
-      if (!isTodosSetores && setor.toLowerCase() !== (setorSelecionado || '').toLowerCase()) {
+      let setor = (l.Setor || l.setor || '').trim();
+      if (!setor) {
+        const cLower = nome.toLowerCase();
+        setor = MAPA_CELULAS_SETORES[cLower] || 'Safira';
+      }
+
+      if (!isTodosSetores && setor.toLowerCase() !== setorAlvo) {
         continue;
       }
 
-      const key = `${setor}___${nome}`;
-      if (!celulasMap.has(key)) {
-        celulasMap.set(key, {
-          id: l.id || key,
-          nome,
-          lider: l.LiderCelula || l.liderCelula || '-',
-          setor,
-        });
-      }
+      const key = `${setor.toLowerCase()}___${nome.toLowerCase()}`;
+      const existing = celulasMap.get(key);
+      const lider = l.LiderCelula || l.liderCelula || (existing && existing.lider !== '-' ? existing.lider : '-');
+      celulasMap.set(key, {
+        id: l.id || key,
+        nome,
+        lider: lider || '-',
+        setor,
+      });
     }
 
     return Array.from(celulasMap.values()).sort((a, b) => {
@@ -129,32 +161,122 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
     return listaSemanas;
   }, [anoSelecionado, mesSelecionado]);
 
-  // 3. MAPA DE INDEXAÇÃO O(1) PARA BUSCA ULTRA RÁPIDA DE VALORES
-  const lancamentosIndexados = useMemo(() => {
-    const map = new Map<string, LancamentoTesouraria>();
+  // 3. MAPA DE INDEXAÇÃO O(1) PARA BUSCA ULTRA RÁPIDA DE VALORES POR CÉLULA E SEMANA
+  const lancamentosPorCelulaESemana = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        pix: number;
+        dinheiro: number;
+        total: number;
+        validadoTesouraria: boolean;
+        relatorios: LancamentoTesouraria[];
+      }
+    >();
+
+    const setorAlvo = (setorSelecionado || 'Safira').trim().toLowerCase();
+
+    // Helper para verificar se a data está na janela de 7 dias daquela semana (terminando no sábado)
+    const isDateInWeekWindow = (dateIso: string, saturday: Date): boolean => {
+      if (!dateIso) return false;
+      try {
+        const clean = dateIso.includes('T') ? dateIso.split('T')[0] : dateIso;
+        const parts = clean.split('-');
+        if (parts.length !== 3) return false;
+        const d = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10), 12, 0, 0);
+        if (isNaN(d.getTime())) return false;
+
+        const satEnd = new Date(saturday.getFullYear(), saturday.getMonth(), saturday.getDate(), 23, 59, 59);
+        const sunStart = new Date(saturday.getFullYear(), saturday.getMonth(), saturday.getDate() - 6, 0, 0, 0);
+        return d >= sunStart && d <= satEnd;
+      } catch {
+        return false;
+      }
+    };
 
     for (let i = 0; i < lancamentos.length; i++) {
       const l = lancamentos[i];
       const celNome = (l.Célula || l.celulaNome || '').trim().toLowerCase();
-      const setorNome = (l.Setor || l.setor || '').trim().toLowerCase();
       if (!celNome) continue;
 
+      let setorNome = (l.Setor || l.setor || '').trim().toLowerCase();
+      if (!setorNome) {
+        setorNome = (MAPA_CELULAS_SETORES[celNome] || 'safira').toLowerCase();
+      }
+
+      // Filtro de setor
+      if (!isTodosSetores && setorNome !== setorAlvo) {
+        continue;
+      }
+
+      // Filtro de ano
+      const lAno = l.ano || (l.data ? new Date(l.data).getFullYear() : null);
+      if (anoNumFiltro !== null && lAno && lAno !== anoNumFiltro) {
+        continue;
+      }
+
+      // Filtro de mês
+      const lMes = l.mes || (l.data ? new Date(l.data).getMonth() + 1 : null);
+      if (mesNumFiltro !== null && lMes && lMes !== mesNumFiltro) {
+        // Se o mês for diferente, mas a semana cair no mês selecionado, checa nas semanas
+        const semNumLanc = typeof l.semanaNumero === 'number' ? l.semanaNumero : l.NumSemana;
+        const semanaNaTela = semanas.some((s) => s.num === semNumLanc || (l.data && isDateInWeekWindow(l.data, s.dataObj)));
+        if (!semanaNaTela) continue;
+      }
+
       const semNumLanc = typeof l.semanaNumero === 'number' ? l.semanaNumero : l.NumSemana;
-      if (semNumLanc !== undefined && semNumLanc !== null) {
-        if (setorNome) map.set(`${setorNome}___${celNome}___sem_${semNumLanc}`, l);
-        map.set(`${celNome}___sem_${semNumLanc}`, l);
+
+      // Encontrar a semana correspondente na tela
+      let matchedSemana: (typeof semanas)[0] | undefined = undefined;
+      for (const sem of semanas) {
+        if (typeof semNumLanc === 'number' && semNumLanc === sem.num) {
+          matchedSemana = sem;
+          break;
+        }
+        if (l.dataBR === sem.data || l.data === sem.dataIso) {
+          matchedSemana = sem;
+          break;
+        }
+        if (l.data && isDateInWeekWindow(l.data, sem.dataObj)) {
+          matchedSemana = sem;
+          break;
+        }
       }
-      if (l.dataBR) {
-        if (setorNome) map.set(`${setorNome}___${celNome}___data_${l.dataBR}`, l);
-        map.set(`${celNome}___data_${l.dataBR}`, l);
-      }
-      if (l.data) {
-        if (setorNome) map.set(`${setorNome}___${celNome}___data_${l.data}`, l);
-        map.set(`${celNome}___data_${l.data}`, l);
+
+      if (!matchedSemana) continue;
+
+      const pix = Number(l.valorPix ?? (l.ValorOferta ?? 0));
+      const esp = Number(l.valorEspecie ?? (l.OfertaEspecie ?? 0));
+      const tot = Number(l.valorTotal ?? (l.Total ?? (pix + esp)));
+      const isValidado = l.TESOURARIA_RECEB === true;
+
+      const keysToAdd = [
+        `${celNome}___sem_${matchedSemana.num}`,
+        `${setorNome}___${celNome}___sem_${matchedSemana.num}`,
+      ];
+
+      for (const k of keysToAdd) {
+        const existing = map.get(k);
+        if (existing) {
+          existing.pix += pix;
+          existing.dinheiro += esp;
+          existing.total += tot;
+          existing.validadoTesouraria = existing.validadoTesouraria && isValidado;
+          existing.relatorios.push(l);
+        } else {
+          map.set(k, {
+            pix,
+            dinheiro: esp,
+            total: tot,
+            validadoTesouraria: isValidado,
+            relatorios: [l],
+          });
+        }
       }
     }
+
     return map;
-  }, [lancamentos]);
+  }, [lancamentos, semanas, anoNumFiltro, mesNumFiltro, setorSelecionado, isTodosSetores]);
 
   // 4. Resumo SKUs: Validados vs Pendentes (O(N))
   const resumoSKUs = useMemo(() => {
@@ -163,15 +285,16 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
     let totalLancados = 0;
 
     const setorFiltro = (setorSelecionado || '').trim().toLowerCase();
-    const anoNumFiltro = anoSelecionado && String(anoSelecionado) !== 'todos' ? Number(anoSelecionado) : null;
-    const mesNumFiltro = mesSelecionado && mesSelecionado !== 'todos' ? Number(mesSelecionado) : null;
 
     for (let i = 0; i < lancamentos.length; i++) {
       const l = lancamentos[i];
-      if (!isTodosSetores) {
-        const s = (l.Setor || l.setor || '').trim().toLowerCase();
-        if (s !== setorFiltro) continue;
+      let s = (l.Setor || l.setor || '').trim().toLowerCase();
+      if (!s) {
+        const c = (l.Célula || l.celulaNome || '').trim().toLowerCase();
+        s = (MAPA_CELULAS_SETORES[c] || 'safira').toLowerCase();
       }
+
+      if (!isTodosSetores && s !== setorFiltro) continue;
       if (anoNumFiltro !== null && l.ano && Number(l.ano) !== anoNumFiltro) continue;
       if (mesNumFiltro !== null && l.mes && Number(l.mes) !== mesNumFiltro) continue;
 
@@ -188,22 +311,23 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
       qtdPendentes,
       totalLancados,
     };
-  }, [lancamentos, setorSelecionado, isTodosSetores, anoSelecionado, mesSelecionado]);
+  }, [lancamentos, setorSelecionado, isTodosSetores, anoNumFiltro, mesNumFiltro]);
 
   // 5. Detecção de relatórios duplicados em alta velocidade O(N)
   const duplicadosInfo = useMemo(() => {
-    const mesNumFiltro = mesSelecionado && mesSelecionado !== 'todos' ? Number(mesSelecionado) : null;
-    const anoNumFiltro = anoSelecionado && String(anoSelecionado) !== 'todos' ? Number(anoSelecionado) : null;
     const numerosSemanasTela = new Set(semanas.map((s) => s.num));
-
     const relsPorSemanaECelula = new Map<string, LancamentoTesouraria[]>();
+    const setorFiltro = (setorSelecionado || '').trim().toLowerCase();
 
     for (let i = 0; i < lancamentos.length; i++) {
       const l = lancamentos[i];
-      if (!isTodosSetores) {
-        const s = (l.Setor || l.setor || '').trim().toLowerCase();
-        if (s !== (setorSelecionado || '').trim().toLowerCase()) continue;
+      let s = (l.Setor || l.setor || '').trim().toLowerCase();
+      if (!s) {
+        const c = (l.Célula || l.celulaNome || '').trim().toLowerCase();
+        s = (MAPA_CELULAS_SETORES[c] || 'safira').toLowerCase();
       }
+
+      if (!isTodosSetores && s !== setorFiltro) continue;
       if (anoNumFiltro !== null && l.ano && Number(l.ano) !== anoNumFiltro) continue;
 
       const semNumLanc = l.semanaNumero ?? l.NumSemana;
@@ -268,7 +392,7 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
       totalDuplicados: totalRelatoriosDuplicados,
       grupos,
     };
-  }, [lancamentos, setorSelecionado, isTodosSetores, anoSelecionado, mesSelecionado, semanas]);
+  }, [lancamentos, setorSelecionado, isTodosSetores, anoNumFiltro, mesNumFiltro, semanas]);
 
   // Helper O(1) para obter valores da célula
   const getValores = (
@@ -279,35 +403,20 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
     const cNorm = celulaNome.trim().toLowerCase();
     const sNorm = (celulaSetor || '').trim().toLowerCase();
 
-    let lanc: LancamentoTesouraria | undefined;
-    if (isTodosSetores && sNorm && sNorm !== 'sem setor') {
-      lanc =
-        lancamentosIndexados.get(`${sNorm}___${cNorm}___data_${semInfo.data}`) ||
-        lancamentosIndexados.get(`${sNorm}___${cNorm}___data_${semInfo.dataIso}`) ||
-        lancamentosIndexados.get(`${sNorm}___${cNorm}___sem_${semInfo.num}`);
-    }
+    const data =
+      lancamentosPorCelulaESemana.get(`${sNorm}___${cNorm}___sem_${semInfo.num}`) ||
+      lancamentosPorCelulaESemana.get(`${cNorm}___sem_${semInfo.num}`);
 
-    if (!lanc) {
-      lanc =
-        lancamentosIndexados.get(`${cNorm}___data_${semInfo.data}`) ||
-        lancamentosIndexados.get(`${cNorm}___data_${semInfo.dataIso}`) ||
-        lancamentosIndexados.get(`${cNorm}___sem_${semInfo.num}`);
-    }
-
-    if (!lanc) {
+    if (!data) {
       return { temDado: false, pix: null, dinheiro: null, validadoTesouraria: false, total: 0 };
     }
 
-    const pix = lanc.valorPix ?? (lanc.ValorOferta ?? 0);
-    const esp = lanc.valorEspecie ?? (lanc.OfertaEspecie ?? 0);
-    const total = lanc.valorTotal ?? (lanc.Total ?? (pix + esp));
-
     return {
       temDado: true,
-      pix,
-      dinheiro: esp,
-      total,
-      validadoTesouraria: lanc.TESOURARIA_RECEB === true,
+      pix: data.pix,
+      dinheiro: data.dinheiro,
+      total: data.total,
+      validadoTesouraria: data.validadoTesouraria,
     };
   };
 

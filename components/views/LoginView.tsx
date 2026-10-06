@@ -79,11 +79,11 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
         id="login-card"
         className="bg-white rounded-2xl p-6 sm:p-7 w-full max-w-[400px] shadow-2xl animate-in zoom-in-95 duration-200 text-center relative"
       >
-        {/* Brand Header com Imagem da Logo Escura oficial */}
+        {/* Brand Header com Imagem WebP oficial */}
         <div className="flex flex-col items-center justify-center mb-6">
           <div className="w-full flex justify-center mb-1">
             <Image
-              src="/logo-appchurch-escura.png"
+              src="/Logo-AppChurch-2.webp"
               alt="AppChurch"
               width={180}
               height={70}

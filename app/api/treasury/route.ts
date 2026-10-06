@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSupabaseClient } from '@/lib/supabase';
-import { converterItemParaLancamento } from '@/lib/treasury-service';
+import { converterItemParaLancamento, MAPA_CELULAS_SETORES } from '@/lib/treasury-service';
 
 // In-memory cache for unidades (cells & sectors) and membros
 let cachedUnidadesMap: Map<string, { id: string; nome: string; pai_id?: string; setor_nome?: string }> | null = null;
@@ -105,8 +105,21 @@ export async function POST(req: NextRequest) {
           // Filtro por setor se selecionado
           if (setorId && setorId !== 'todos') {
             const u = item.unidade_id ? unidadesMap.get(String(item.unidade_id)) : null;
-            const itemSetor = u?.setor_nome || '';
-            if (itemSetor && itemSetor.toLowerCase() !== String(setorId).toLowerCase()) {
+            let itemSetor = u?.setor_nome;
+            if (!itemSetor || itemSetor === 'Safira') {
+              const cName = String(u?.nome || item.celula_nome || '').toLowerCase().trim();
+              if (MAPA_CELULAS_SETORES[cName]) {
+                itemSetor = MAPA_CELULAS_SETORES[cName];
+              } else {
+                const obs = String(item.observacao || '');
+                if (obs.toLowerCase().includes('setor:')) {
+                  const match = obs.match(/setor:\s*([^|]+)/i);
+                  if (match) itemSetor = match[1].trim();
+                }
+              }
+            }
+            if (!itemSetor) itemSetor = 'Safira';
+            if (itemSetor.toLowerCase() !== String(setorId).toLowerCase()) {
               return false;
             }
           }
@@ -129,6 +142,33 @@ export async function POST(req: NextRequest) {
           const nomeTesoureiroReal =
             (item.tesoureiro_id && membrosMap.get(String(item.tesoureiro_id))) || l.NomeTesoureiro || null;
 
+          let setorReal = uInfo?.setor_nome;
+          if (!setorReal || setorReal === 'Safira') {
+            const cNorm = String(nomeCelulaReal).toLowerCase().trim();
+            if (MAPA_CELULAS_SETORES[cNorm]) {
+              setorReal = MAPA_CELULAS_SETORES[cNorm];
+            } else {
+              const obs = String(item.observacao || '');
+              if (obs.toLowerCase().includes('setor:')) {
+                const match = obs.match(/setor:\s*([^|]+)/i);
+                if (match) setorReal = match[1].trim();
+              }
+            }
+          }
+          if (!setorReal) {
+            setorReal = 'Safira';
+          }
+          let itemAno = new Date().getFullYear();
+          let itemMes = new Date().getMonth() + 1;
+          if (item.data_relatorio) {
+            const clean = String(item.data_relatorio).split('T')[0];
+            const parts = clean.split('-');
+            if (parts.length === 3) {
+              itemAno = parseInt(parts[0], 10);
+              itemMes = parseInt(parts[1], 10);
+            }
+          }
+
           return {
             id: String(item.id),
             unidade_id: item.unidade_id ? String(item.unidade_id) : undefined,
@@ -141,6 +181,11 @@ export async function POST(req: NextRequest) {
             data_recebimento: item.data_recebimento || null,
             tesoureiro_id: item.tesoureiro_id || null,
             nome_tesoureiro: nomeTesoureiroReal,
+            setor: String(setorReal),
+            setor_nome: String(setorReal),
+            ano: itemAno,
+            mes: itemMes,
+            numero_semana: item.numero_semana ?? l.semanaNumero,
           };
         });
 
@@ -246,17 +291,21 @@ export async function POST(req: NextRequest) {
             if (pMes !== null && itemMes !== pMes) return;
 
             if (r.tesouraria_recebido !== true) {
-              let setor = 'Safira';
               const u = r.unidade_id ? unidadesMap.get(String(r.unidade_id)) : null;
-              if (u?.setor_nome) {
-                setor = u.setor_nome;
-              } else {
-                const obs = String(r.observacao || '');
-                if (obs.toLowerCase().includes('setor:')) {
-                  const match = obs.match(/setor:\s*([^|]+)/i);
-                  if (match) setor = match[1].trim();
+              let setor = u?.setor_nome;
+              if (!setor || setor === 'Safira') {
+                const cNorm = String(u?.nome || '').toLowerCase().trim();
+                if (MAPA_CELULAS_SETORES[cNorm]) {
+                  setor = MAPA_CELULAS_SETORES[cNorm];
+                } else {
+                  const obs = String(r.observacao || '');
+                  if (obs.toLowerCase().includes('setor:')) {
+                    const match = obs.match(/setor:\s*([^|]+)/i);
+                    if (match) setor = match[1].trim();
+                  }
                 }
               }
+              if (!setor) setor = 'Safira';
               setoresMap.set(setor, (setoresMap.get(setor) || 0) + 1);
             }
           });

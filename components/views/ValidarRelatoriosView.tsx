@@ -13,10 +13,11 @@ import {
   Loader2,
   ChevronDown,
   Lock,
+  RotateCw,
 } from 'lucide-react';
 import { LancamentoTesouraria, MembroItem, PermissaoUsuario } from '@/lib/types';
 import { formatBRL, formatDateBR } from '@/lib/utils';
-import { TreasuryService } from '@/lib/treasury-service';
+import { TreasuryService, MAPA_CELULAS_SETORES } from '@/lib/treasury-service';
 
 interface RelatorioDetalhadoRPC {
   id: string;
@@ -30,6 +31,11 @@ interface RelatorioDetalhadoRPC {
   data_recebimento?: string | null;
   tesoureiro_id?: string | null;
   nome_tesoureiro?: string | null;
+  setor?: string;
+  setor_nome?: string;
+  ano?: number;
+  mes?: number;
+  numero_semana?: number;
 }
 
 interface SetorPendenciaRPC {
@@ -38,11 +44,22 @@ interface SetorPendenciaRPC {
   qtd_pendentes: number;
 }
 
+interface ValidarCache {
+  resumo: { pendentes: number; confirmados: number };
+  setores: SetorPendenciaRPC[];
+  relatorios: RelatorioDetalhadoRPC[];
+  ano: string | number;
+  mes: string;
+}
+
+let globalValidarCache: ValidarCache | null = null;
+
 interface ValidarRelatoriosViewProps {
   lancamentos?: LancamentoTesouraria[];
   anoSelecionado: number | string;
   onSelectAno?: (ano: number | string) => void;
   onRefresh?: () => void;
+  isRefreshing?: boolean;
   onShowToast: (msg: string) => void;
   usuarioLogado?: MembroItem | null;
   usuarios?: PermissaoUsuario[];
@@ -68,6 +85,8 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
   lancamentos = [],
   anoSelecionado,
   onSelectAno,
+  onRefresh,
+  isRefreshing = false,
   onShowToast,
   usuarioLogado,
 }) => {
@@ -77,16 +96,16 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
   const [setorSelecionadoId, setSetorSelecionadoId] = useState<string | null>(null);
   const [buscaTexto, setBuscaTexto] = useState<string>('');
 
-  // Dados carregados das RPCs do Supabase
-  const [setoresList, setSetoresList] = useState<SetorPendenciaRPC[]>([]);
-  const [relatorios, setRelatorios] = useState<RelatorioDetalhadoRPC[]>([]);
-  const [resumoContadores, setResumoContadores] = useState<{ pendentes: number; confirmados: number }>({
+  // Dados carregados das RPCs do Supabase - inicializa do cache se já existir
+  const [setoresList, setSetoresList] = useState<SetorPendenciaRPC[]>(() => globalValidarCache?.setores || []);
+  const [relatorios, setRelatorios] = useState<RelatorioDetalhadoRPC[]>(() => globalValidarCache?.relatorios || []);
+  const [resumoContadores, setResumoContadores] = useState<{ pendentes: number; confirmados: number }>(() => globalValidarCache?.resumo || {
     pendentes: 0,
     confirmados: 0,
   });
 
   // Estados de carregamento controlados para evitar qualquer piscar de tela
-  const [isCarregandoGeral, setIsCarregandoGeral] = useState<boolean>(true);
+  const [isCarregandoGeral, setIsCarregandoGeral] = useState<boolean>(() => !globalValidarCache);
   const [isAtualizandoTabela, setIsAtualizandoTabela] = useState<boolean>(false);
 
   // Seleção para ações em lote
@@ -167,97 +186,87 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
     return MESES_OPCOES;
   }, [anoSelecionado, isTodosAnos]);
 
-  // Disparador de recarregamento
-  const [mutationTrigger, setMutationTrigger] = useState<number>(0);
-
-  const triggerMutation = useCallback(() => {
-    setMutationTrigger((prev) => prev + 1);
-  }, []);
-
-  // Rastreio de período para executar resumo/setores somente quando necessário
-  const ultimoPeriodoRef = useRef<{ ano: number; mes: number | null }>({ ano: -1, mes: -1 });
-
-  // CARREGAMENTO UNIFICADO SEM PISCAR OU DUPLO CARREGAMENTO
+  // CARREGAMENTO OTIMIZADO: Só consulta o banco no início ou quando usuário clicar em Atualizar
   useEffect(() => {
-    let isMounted = true;
+    let isCancelled = false;
 
-    const carregar = async () => {
+    const carregarDados = async () => {
       const pAno = isTodosAnos ? 'todos' : Number(anoSelecionado) || new Date().getFullYear();
       const pMes = mesFiltro !== 'todos' && mesFiltro !== '' ? Number(mesFiltro) : null;
-      const pSomentePendentes = tabAtiva === 'pendentes' ? true : tabAtiva === 'confirmados' ? false : null;
+      const mesChave = String(pMes ?? 'todos');
 
-      const precisaCarregarTudo =
-        ultimoPeriodoRef.current.ano !== (isTodosAnos ? 0 : Number(pAno)) ||
-        ultimoPeriodoRef.current.mes !== pMes ||
-        mutationTrigger > 0 ||
-        ultimoPeriodoRef.current.ano === -1;
+      // Se temos cache e não é forceRefresh (isRefreshing), carrega da memória imediatamente
+      if (
+        !isRefreshing &&
+        globalValidarCache &&
+        globalValidarCache.ano === pAno &&
+        globalValidarCache.mes === mesChave
+      ) {
+        if (!isCancelled) {
+          setResumoContadores(globalValidarCache.resumo);
+          setSetoresList(globalValidarCache.setores);
+          setRelatorios(globalValidarCache.relatorios);
+          setIsCarregandoGeral(false);
+        }
+        return;
+      }
 
-      if (precisaCarregarTudo) {
+      if (!globalValidarCache) {
         setIsCarregandoGeral(true);
       } else {
         setIsAtualizandoTabela(true);
       }
 
       try {
-        if (precisaCarregarTudo) {
-          // Consulta única em paralelo sem renderizações intermediárias
-          const [resumoRes, setoresRes, relatoriosRes] = await Promise.all([
-            TreasuryService.rpcTesourariaResumo(pAno, pMes),
-            TreasuryService.rpcTesourariaSetoresPendencias(pAno, pMes),
-            TreasuryService.rpcTesourariaRelatoriosDetalhados(pAno, pMes, setorSelecionadoId, pSomentePendentes),
-          ]);
+        // Busca completa dos dados do período em paralelo
+        const [resumoRes, setoresRes, relatoriosRes] = await Promise.all([
+          TreasuryService.rpcTesourariaResumo(pAno, pMes),
+          TreasuryService.rpcTesourariaSetoresPendencias(pAno, pMes),
+          TreasuryService.rpcTesourariaRelatoriosDetalhados(pAno, pMes, null, null),
+        ]);
 
-          if (!isMounted) return;
+        if (isCancelled) return;
 
-          if (resumoRes.isAuthError || setoresRes.isAuthError || relatoriosRes.isAuthError) {
-            onShowToast('Sessão expirada ou sem permissão de tesouraria. Faça login novamente.');
-            return;
-          }
-
-          if (resumoRes.success) setResumoContadores(resumoRes.data);
-          if (setoresRes.success) setSetoresList(setoresRes.data);
-          if (relatoriosRes.success) setRelatorios(relatoriosRes.data);
-
-          ultimoPeriodoRef.current = { ano: isTodosAnos ? 0 : Number(pAno), mes: pMes };
-        } else {
-          // Apenas atualiza a listagem de relatórios ao trocar setor ou aba
-          const relatoriosRes = await TreasuryService.rpcTesourariaRelatoriosDetalhados(
-            pAno,
-            pMes,
-            setorSelecionadoId,
-            pSomentePendentes
-          );
-
-          if (!isMounted) return;
-
-          if (relatoriosRes.isAuthError) {
-            onShowToast('Sessão expirada ou sem permissão de tesouraria.');
-            return;
-          }
-
-          if (relatoriosRes.success) {
-            setRelatorios(relatoriosRes.data);
-          }
+        if (resumoRes.isAuthError || setoresRes.isAuthError || relatoriosRes.isAuthError) {
+          onShowToast('Sessão expirada ou sem permissão de tesouraria. Faça login novamente.');
+          return;
         }
+
+        const newResumo = resumoRes.success ? resumoRes.data : { pendentes: 0, confirmados: 0 };
+        const newSetores = setoresRes.success ? setoresRes.data : [];
+        const newRelatorios = relatoriosRes.success ? relatoriosRes.data : [];
+
+        setResumoContadores(newResumo);
+        setSetoresList(newSetores);
+        setRelatorios(newRelatorios);
+
+        // Salva no cache global
+        globalValidarCache = {
+          resumo: newResumo,
+          setores: newSetores,
+          relatorios: newRelatorios,
+          ano: pAno,
+          mes: mesChave,
+        };
       } catch (err: any) {
-        if (isMounted) {
+        if (!isCancelled) {
           console.warn('Erro ao carregar dados de tesouraria:', err);
           onShowToast('Erro ao carregar dados do servidor.');
         }
       } finally {
-        if (isMounted) {
+        if (!isCancelled) {
           setIsCarregandoGeral(false);
           setIsAtualizandoTabela(false);
         }
       }
     };
 
-    carregar();
+    carregarDados();
 
     return () => {
-      isMounted = false;
+      isCancelled = true;
     };
-  }, [anoSelecionado, isTodosAnos, mesFiltro, setorSelecionadoId, tabAtiva, mutationTrigger, onShowToast]);
+  }, [anoSelecionado, isTodosAnos, mesFiltro, isRefreshing, onShowToast]);
 
   // Soma de pendências de todas as abas de setores para a aba "Todos"
   const totalPendentesSoma = useMemo(() => {
@@ -267,77 +276,216 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
     return setoresList.reduce((acc, s) => acc + (s.qtd_pendentes || 0), 0);
   }, [resumoContadores.pendentes, setoresList]);
 
-  // Busca por texto client-side
+  // FILTRAGEM INSTANTÂNEA CLIENT-SIDE (0ms, 0 consultas ao banco):
+  // 1. Aba (P/ Validar vs Confirmados)
+  // 2. Setor selecionado
+  // 3. Busca de texto
   const relatoriosFiltrados = useMemo(() => {
-    if (!buscaTexto.trim()) return relatorios;
     const busca = buscaTexto.toLowerCase().trim();
-    return relatorios.filter((r) => {
-      const celula = (r.celula_nome || '').toLowerCase();
-      const lider = (r.lideres || '').toLowerCase();
-      const data = formatDateBR(r.data_relatorio).toLowerCase();
-      return celula.includes(busca) || lider.includes(busca) || data.includes(busca);
-    });
-  }, [relatorios, buscaTexto]);
 
-  // AÇÃO: VALIDAR RELATÓRIO
+    return relatorios.filter((r) => {
+      // 1. Filtro pela aba
+      if (tabAtiva === 'pendentes' && r.tesouraria_recebido === true) return false;
+      if (tabAtiva === 'confirmados' && r.tesouraria_recebido !== true) return false;
+
+      // 2. Filtro por setor
+      if (setorSelecionadoId !== null) {
+        let s = (r.setor || r.setor_nome || '').trim().toLowerCase();
+        if (!s) {
+          const c = (r.celula_nome || '').trim().toLowerCase();
+          s = (MAPA_CELULAS_SETORES[c] || 'safira').toLowerCase();
+        }
+        if (s !== setorSelecionadoId.trim().toLowerCase()) return false;
+      }
+
+      // 3. Filtro busca textual
+      if (busca) {
+        const celula = (r.celula_nome || '').toLowerCase();
+        const lider = (r.lideres || '').toLowerCase();
+        const data = formatDateBR(r.data_relatorio).toLowerCase();
+        if (!celula.includes(busca) && !lider.includes(busca) && !data.includes(busca)) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+  }, [relatorios, tabAtiva, setorSelecionadoId, buscaTexto]);
+
+  // AÇÃO: VALIDAR RELATÓRIO COM ATUALIZAÇÃO OTIMISTA INSTANTÂNEA
   const handleConfirmarItem = async (id: string, celulaNome: string) => {
+    const prevRelatorios = [...relatorios];
+    const prevResumo = { ...resumoContadores };
+    const prevSetores = [...setoresList];
+
+    // Atualização otimista imediata no estado
+    setRelatorios((prev) =>
+      prev.map((r) =>
+        r.id === id
+          ? {
+              ...r,
+              tesouraria_recebido: true,
+              data_recebimento: new Date().toISOString(),
+              nome_tesoureiro: usuarioLogado?.nome || 'Tesoureiro',
+            }
+          : r
+      )
+    );
+    setResumoContadores((prev) => ({
+      pendentes: Math.max(0, prev.pendentes - 1),
+      confirmados: prev.confirmados + 1,
+    }));
+    const itemTarget = relatorios.find((r) => r.id === id);
+    let itemSetor = (itemTarget?.setor || itemTarget?.setor_nome || '').toLowerCase();
+    if (!itemSetor && itemTarget?.celula_nome) {
+      itemSetor = (MAPA_CELULAS_SETORES[itemTarget.celula_nome.toLowerCase()] || 'safira').toLowerCase();
+    }
+    setSetoresList((prev) =>
+      prev.map((s) =>
+        s.setor_nome.toLowerCase() === itemSetor
+          ? { ...s, qtd_pendentes: Math.max(0, s.qtd_pendentes - 1) }
+          : s
+      )
+    );
+    setSelecionados((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+
+    onShowToast(`Relatório "${celulaNome}" validado com sucesso!`);
+
     try {
       const idUsuario = usuarioLogado?.id || '1';
       const res = await TreasuryService.confirmarLancamento(id, idUsuario);
-
       if (!res.success) {
+        setRelatorios(prevRelatorios);
+        setResumoContadores(prevResumo);
+        setSetoresList(prevSetores);
         onShowToast(`Erro ao validar relatório: ${res.error || 'Falha na validação'}`);
-        return;
+      } else {
+        if (globalValidarCache) {
+          globalValidarCache.relatorios = globalValidarCache.relatorios.map((r) =>
+            r.id === id ? { ...r, tesouraria_recebido: true } : r
+          );
+        }
       }
-
-      onShowToast(`Relatório "${celulaNome}" validado com sucesso!`);
-      setSelecionados((prev) => {
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
-
-      triggerMutation();
     } catch (err: any) {
+      setRelatorios(prevRelatorios);
+      setResumoContadores(prevResumo);
+      setSetoresList(prevSetores);
       onShowToast(`Falha ao validar relatório: ${err.message}`);
     }
   };
 
-  // AÇÃO: DESFAZER VALIDAÇÃO DE RELATÓRIO
+  // AÇÃO: DESFAZER VALIDAÇÃO COM ATUALIZAÇÃO OTIMISTA INSTANTÂNEA
   const handleDesfazerItem = async (id: string, celulaNome: string) => {
+    const prevRelatorios = [...relatorios];
+    const prevResumo = { ...resumoContadores };
+    const prevSetores = [...setoresList];
+
+    setRelatorios((prev) =>
+      prev.map((r) =>
+        r.id === id
+          ? {
+              ...r,
+              tesouraria_recebido: false,
+              data_recebimento: null,
+              nome_tesoureiro: null,
+            }
+          : r
+      )
+    );
+    setResumoContadores((prev) => ({
+      pendentes: prev.pendentes + 1,
+      confirmados: Math.max(0, prev.confirmados - 1),
+    }));
+    const itemTarget = relatorios.find((r) => r.id === id);
+    let itemSetor = (itemTarget?.setor || itemTarget?.setor_nome || '').toLowerCase();
+    if (!itemSetor && itemTarget?.celula_nome) {
+      itemSetor = (MAPA_CELULAS_SETORES[itemTarget.celula_nome.toLowerCase()] || 'safira').toLowerCase();
+    }
+    setSetoresList((prev) =>
+      prev.map((s) =>
+        s.setor_nome.toLowerCase() === itemSetor
+          ? { ...s, qtd_pendentes: s.qtd_pendentes + 1 }
+          : s
+      )
+    );
+
+    onShowToast(`Validação do relatório "${celulaNome}" desfeita.`);
+
     try {
       const res = await TreasuryService.desconfirmarLancamento(id);
-
       if (!res.success) {
+        setRelatorios(prevRelatorios);
+        setResumoContadores(prevResumo);
+        setSetoresList(prevSetores);
         onShowToast(`Erro ao reverter validação: ${res.error || 'Falha ao reverter'}`);
-        return;
+      } else {
+        if (globalValidarCache) {
+          globalValidarCache.relatorios = globalValidarCache.relatorios.map((r) =>
+            r.id === id ? { ...r, tesouraria_recebido: false } : r
+          );
+        }
       }
-
-      onShowToast(`Validação do relatório "${celulaNome}" desfeita.`);
-      triggerMutation();
     } catch (err: any) {
+      setRelatorios(prevRelatorios);
+      setResumoContadores(prevResumo);
+      setSetoresList(prevSetores);
       onShowToast(`Falha ao reverter: ${err.message}`);
     }
   };
 
-  // AÇÃO EM LOTE: VALIDAR SELECIONADOS
+  // AÇÃO EM LOTE: VALIDAR SELECIONADOS COM ATUALIZAÇÃO OTIMISTA
   const handleConfirmarSelecionados = async () => {
     const ids = Array.from(selecionados);
     if (ids.length === 0) return;
 
+    const prevRelatorios = [...relatorios];
+    const prevResumo = { ...resumoContadores };
+    const prevSetores = [...setoresList];
+    const idsSet = new Set(ids);
+
+    setRelatorios((prev) =>
+      prev.map((r) =>
+        idsSet.has(r.id)
+          ? {
+              ...r,
+              tesouraria_recebido: true,
+              data_recebimento: new Date().toISOString(),
+              nome_tesoureiro: usuarioLogado?.nome || 'Tesoureiro',
+            }
+          : r
+      )
+    );
+    setResumoContadores((prev) => ({
+      pendentes: Math.max(0, prev.pendentes - ids.length),
+      confirmados: prev.confirmados + ids.length,
+    }));
+    setSelecionados(new Set());
+
+    onShowToast(`${ids.length} relatórios validados com sucesso!`);
+
     try {
       const idUsuario = usuarioLogado?.id || '1';
       const res = await TreasuryService.confirmarLancamentosEmMassa(ids, idUsuario);
-
       if (!res.success) {
+        setRelatorios(prevRelatorios);
+        setResumoContadores(prevResumo);
+        setSetoresList(prevSetores);
         onShowToast(`Erro ao validar relatórios selecionados: ${res.error || 'Falha na validação'}`);
-        return;
+      } else {
+        if (globalValidarCache) {
+          globalValidarCache.relatorios = globalValidarCache.relatorios.map((r) =>
+            idsSet.has(r.id) ? { ...r, tesouraria_recebido: true } : r
+          );
+        }
       }
-
-      onShowToast(`${ids.length} relatórios validados com sucesso!`);
-      setSelecionados(new Set());
-      triggerMutation();
     } catch (err: any) {
+      setRelatorios(prevRelatorios);
+      setResumoContadores(prevResumo);
+      setSetoresList(prevSetores);
       onShowToast(`Falha na validação em lote: ${err.message}`);
     }
   };
@@ -384,9 +532,24 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
         especie: editEspecie,
         total,
       });
+
+      setRelatorios((prev) =>
+        prev.map((r) =>
+          r.id === modalEditarItem.id
+            ? { ...r, valor_pix: editPix, valor_especie: editEspecie }
+            : r
+        )
+      );
+      if (globalValidarCache) {
+        globalValidarCache.relatorios = globalValidarCache.relatorios.map((r) =>
+          r.id === modalEditarItem.id
+            ? { ...r, valor_pix: editPix, valor_especie: editEspecie }
+            : r
+        );
+      }
+
       onShowToast(`Relatório atualizado com sucesso.`);
       setModalEditarItem(null);
-      triggerMutation();
     } catch (e) {
       console.error('Erro ao salvar edição:', e);
       onShowToast('Erro ao salvar alterações no relatório.');
@@ -495,6 +658,17 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
               className="bg-[#13192f] border border-[#242f52] text-xs text-white pl-8 pr-2.5 py-1.5 rounded-lg focus:outline-none focus:border-indigo-400 w-44 sm:w-56 placeholder:text-slate-500"
             />
           </div>
+
+          {/* Botão de Atualizar dados no banco */}
+          <button
+            onClick={() => onRefresh?.()}
+            disabled={isRefreshing}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#13192f] border border-[#242f52] hover:border-indigo-500/50 text-slate-300 hover:text-white text-xs font-semibold transition-all cursor-pointer shadow-xs active:scale-[0.98]"
+            title="Sincronizar e consultar dados novamente no Supabase"
+          >
+            <RotateCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-indigo-400' : 'text-slate-400'}`} />
+            <span className="hidden sm:inline">Atualizar</span>
+          </button>
         </div>
       </div>
 

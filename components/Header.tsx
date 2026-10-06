@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useMemo } from 'react';
+import React, { useMemo, useEffect } from 'react';
 import { RotateCw, Menu } from 'lucide-react';
 import { ViewMode, LancamentoTesouraria } from '@/lib/types';
 
@@ -21,7 +21,6 @@ interface HeaderProps {
 }
 
 const MESES_HEADER = [
-  { valor: 'todos', label: 'Todos os Meses' },
   { valor: '1', label: 'Janeiro' },
   { valor: '2', label: 'Fevereiro' },
   { valor: '3', label: 'Março' },
@@ -34,6 +33,19 @@ const MESES_HEADER = [
   { valor: '10', label: 'Outubro' },
   { valor: '11', label: 'Novembro' },
   { valor: '12', label: 'Dezembro' },
+];
+
+const SETORES_PADRAO = [
+  'Safira',
+  'Fire',
+  'White',
+  'Azul',
+  'Amarelo',
+  'Black',
+  'Diamante',
+  'Legacy',
+  'Onix',
+  'Titanium',
 ];
 
 export const Header: React.FC<HeaderProps> = ({
@@ -88,11 +100,46 @@ export const Header: React.FC<HeaderProps> = ({
       String(anoSelecionado) === String(anoAtual);
 
     if (isAnoAtual) {
-      return MESES_HEADER.filter((m) => m.valor === 'todos' || Number(m.valor) <= mesAtual);
+      return MESES_HEADER.filter((m) => Number(m.valor) <= mesAtual);
     }
 
     return MESES_HEADER;
   }, [anoSelecionado]);
+
+  // Lista de setores válidos (sem a opção "todos")
+  const listaSetores = useMemo(() => {
+    const base = setoresDisponiveis.length > 0 ? setoresDisponiveis : SETORES_PADRAO;
+    return base.filter(
+      (s) => s && s.toLowerCase() !== 'todos' && s.toLowerCase() !== 'todos os setores'
+    );
+  }, [setoresDisponiveis]);
+
+  // Auto-seleciona sempre o mês atual (ou último mês disponível válido, nunca 'todos')
+  useEffect(() => {
+    if (onSelectMes && mesesDisponiveis.length > 0) {
+      const mesAtualStr = String(new Date().getMonth() + 1);
+      const isValido = mesSelecionado && mesSelecionado !== 'todos' && mesesDisponiveis.some((m) => m.valor === mesSelecionado);
+      if (!isValido) {
+        const temAtual = mesesDisponiveis.some((m) => m.valor === mesAtualStr);
+        onSelectMes(temAtual ? mesAtualStr : mesesDisponiveis[mesesDisponiveis.length - 1].valor);
+      }
+    }
+  }, [mesSelecionado, mesesDisponiveis, onSelectMes]);
+
+  // Auto-seleciona sempre o primeiro setor (nunca 'todos')
+  useEffect(() => {
+    if (onSelectSetor && listaSetores.length > 0) {
+      const isValido =
+        setorSelecionado &&
+        setorSelecionado.toLowerCase() !== 'todos' &&
+        setorSelecionado.toLowerCase() !== 'todos os setores' &&
+        listaSetores.includes(setorSelecionado);
+
+      if (!isValido) {
+        onSelectSetor(listaSetores[0]);
+      }
+    }
+  }, [setorSelecionado, listaSetores, onSelectSetor]);
 
   const getTitle = () => {
     switch (currentView) {
@@ -161,11 +208,15 @@ export const Header: React.FC<HeaderProps> = ({
               </div>
 
               {/* 2. Mês */}
-              {mesSelecionado && onSelectMes && (
+              {onSelectMes && (
                 <div className="flex items-center gap-1 bg-[#252a40] px-2.5 py-1 rounded-lg border border-[#394164]">
                   <label className="text-xs text-slate-300 font-medium">Mês:</label>
                   <select
-                    value={mesSelecionado}
+                    value={
+                      !mesSelecionado || mesSelecionado === 'todos'
+                        ? String(new Date().getMonth() + 1)
+                        : mesSelecionado
+                    }
                     onChange={(e) => onSelectMes(e.target.value)}
                     className="bg-transparent text-xs font-bold text-white focus:outline-none cursor-pointer"
                   >
@@ -179,25 +230,23 @@ export const Header: React.FC<HeaderProps> = ({
               )}
 
               {/* 3. Setor */}
-              {setorSelecionado && onSelectSetor && (
+              {onSelectSetor && (
                 <div className="flex items-center gap-1 bg-[#252a40] px-2.5 py-1 rounded-lg border border-[#394164]">
                   <label className="text-xs text-slate-300 font-medium">Setor:</label>
                   <select
-                    value={setorSelecionado}
+                    value={
+                      !setorSelecionado || setorSelecionado.toLowerCase() === 'todos' || setorSelecionado.toLowerCase() === 'todos os setores'
+                        ? listaSetores[0] || 'Safira'
+                        : setorSelecionado
+                    }
                     onChange={(e) => onSelectSetor(e.target.value)}
                     className="bg-white text-xs font-bold text-slate-900 px-1.5 py-0.5 rounded focus:outline-none cursor-pointer shadow-xs"
                   >
-                    <option value="todos">Todos os Setores</option>
-                    {(setoresDisponiveis.length > 0
-                      ? setoresDisponiveis
-                      : ['Safira', 'Fire', 'White', 'Azul', 'Amarelo', 'Black', 'Diamante', 'Legacy', 'Onix', 'Titanium']
-                    )
-                      .filter((s) => s.toLowerCase() !== 'todos')
-                      .map((s) => (
-                        <option key={s} value={s}>
-                          {s}
-                        </option>
-                      ))}
+                    {listaSetores.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
                   </select>
                 </div>
               )}

@@ -23,6 +23,19 @@ export function formatarDataBR(val: any): string {
   return str;
 }
 
+export const MAPA_CELULAS_SETORES: Record<string, string> = {
+  'maranata': 'Safira', 'nazireu': 'Safira', 'cordeirinhos kids': 'Safira', 'metanoia': 'Safira', 'efratá': 'Safira', 'tetelestai': 'Safira',
+  'frutifera': 'Fire', 'ekklesia': 'Fire', 'jeová jireh': 'Fire', 'elohim': 'Fire', 'huiós': 'Fire', 'adonai': 'Fire', 'barukids': 'Fire', 'baruk': 'Fire', 'brotinhos kids': 'Fire', 'efraim': 'Fire',
+  'qahal kids': 'White', 'éden': 'White', 'dunamis': 'White', 'lírios': 'White', 'qahal': 'White', 'boas novas': 'White', 'holy spirit': 'White', 'naham': 'White', 'zion': 'White', 'áquila kids': 'White', 'revolution': 'White', 'be one': 'White', 'oliveiras': 'White', 'áquila': 'White', 'videira': 'White',
+  'mel kids': 'Titanium', 'rafá': 'Titanium', 'betel': 'Titanium', 'ágape': 'Titanium',
+  'ekballo': 'Legacy', 'galileu': 'Legacy', 'yeshua': 'Legacy', 'jesus people': 'Legacy',
+  'zoe kids': 'Black', 'avivah': 'Black', 'hope': 'Black', 'new mindinhos': 'Black', 'filipenses 4:8': 'Black', 'zoe': 'Black', 'filikids': 'Black', 'atos 29': 'Black', 'new mind': 'Black', 'hope kids': 'Black',
+  'razak': 'Diamante', 'kairós': 'Diamante', 'gideões': 'Diamante', 'hineni': 'Diamante', 'aba pai': 'Diamante', 'hágios': 'Diamante', 'kairós kids': 'Diamante',
+  'rei davi': 'Onix', 'kadosh': 'Onix', 'emaús': 'Onix', 'renovo': 'Onix',
+  'geração joão batista': 'Amarelo', 'herdeiros kids': 'Amarelo', 'nova geração eleita': 'Amarelo', 'geração hur kids': 'Amarelo', 'herdeiros da glória': 'Amarelo', 'geração hur': 'Amarelo',
+  'life kids': 'Azul', 'geração eleita kids': 'Azul', 'geração eleita': 'Azul', 'sal e luz': 'Azul', 'revigora': 'Azul', 'life': 'Azul', 'new life': 'Azul', 'revigora kids': 'Azul', 'cordeiro de deus': 'Azul', 'nações': 'Azul'
+};
+
 export function converterItemParaLancamento(item: any, idx = 0): LancamentoTesouraria {
   const id = String(item.id || item.ID || item.Id || `rel-${Date.now()}-${idx}`);
   
@@ -175,7 +188,19 @@ export function converterItemParaLancamento(item: any, idx = 0): LancamentoTesou
     celulaNome = `Célula #${idx + 1}`;
   }
 
-  if (!setor) setor = String(item.setor || item.Setor || '-').trim();
+  if (item.setor || item.setor_nome || item.Setor) {
+    setor = String(item.setor || item.setor_nome || item.Setor).trim();
+  } else if (celulaNome) {
+    const cNorm = celulaNome.toLowerCase().trim();
+    if (MAPA_CELULAS_SETORES[cNorm]) {
+      setor = MAPA_CELULAS_SETORES[cNorm];
+    }
+  }
+
+  if (!setor || setor === '-' || setor === 'undefined') {
+    setor = 'Safira';
+  }
+
   if (!liderCelula) liderCelula = String(item.lider || item.LiderCelula || item.responsavel_envio || '-').trim();
 
   // Resolve the validator name accurately from idTesoureiro
@@ -199,14 +224,18 @@ export function converterItemParaLancamento(item: any, idx = 0): LancamentoTesou
     }
   }
 
+  const numSemanaFinal = item.numero_semana !== undefined && item.numero_semana !== null
+    ? Number(item.numero_semana)
+    : semanaNumero;
+
   return {
     id,
     ID: item.ID || id,
     igreja_id: item.igreja_id,
     data: dataIso,
     dataBR,
-    semanaNumero,
-    NumSemana: semanaNumero,
+    semanaNumero: numSemanaFinal,
+    NumSemana: numSemanaFinal,
     ano: Number(item.ano || ano),
     mes: Number(item.mes || mes),
     celulaNome,
