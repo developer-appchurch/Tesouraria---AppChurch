@@ -638,6 +638,9 @@ export const TreasuryService = {
       nome: String(u.nome || '').trim(),
       pai_id: u.pai_id ? String(u.pai_id) : null,
       ativo: u.ativo === true,
+      nivel_tipo_id: u.nivel_tipo_id ? String(u.nivel_tipo_id) : null,
+      igreja_id: u.igreja_id ? String(u.igreja_id) : null,
+      dia_semana: u.dia_semana ? String(u.dia_semana).trim() : null,
     }));
     memoryUnidades = lista;
     lastUnidadesFetch = now;

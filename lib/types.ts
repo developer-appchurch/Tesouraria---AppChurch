@@ -160,4 +160,7 @@ export interface UnidadeCadastrada {
   nome: string;
   pai_id: string | null;
   ativo: boolean;
+  nivel_tipo_id?: string | null;
+  igreja_id?: string | null;
+  dia_semana?: string | null;
 }

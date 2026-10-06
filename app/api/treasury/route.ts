@@ -334,11 +334,12 @@ export async function POST(req: NextRequest) {
       }
 
       case 'listar_unidades': {
+        const igrejaAlvo = params.igreja_id || igrejaId || 'ff600f5f-b91f-4826-bde2-3976e718877c';
         const rows = await buscarTodos<any>(() =>
           supabase
             .from('unidades')
-            .select('id, nome, pai_id, ativo')
-            .eq('igreja_id', igrejaId)
+            .select('id, nome, pai_id, ativo, nivel_tipo_id, igreja_id, dia_semana')
+            .eq('igreja_id', igrejaAlvo)
             .order('nome', { ascending: true })
         );
         return NextResponse.json({ success: true, data: rows });

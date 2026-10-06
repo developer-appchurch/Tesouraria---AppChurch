@@ -79,22 +79,17 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
         id="login-card"
         className="bg-white rounded-2xl p-6 sm:p-7 w-full max-w-[400px] shadow-2xl animate-in zoom-in-95 duration-200 text-center relative"
       >
-        {/* Brand Header com Imagem WebP oficial */}
-        <div className="flex flex-col items-center justify-center mb-6">
-          <div className="w-full flex justify-center mb-1">
-            <Image
-              src="/Logo-AppChurch-2.webp"
-              alt="AppChurch"
-              width={180}
-              height={70}
-              className="w-36 sm:w-40 max-w-[170px] h-auto object-contain mx-auto select-none"
-              priority
-              referrerPolicy="no-referrer"
-            />
-          </div>
-          <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
-            ADM Tesouraria
-          </p>
+        {/* Brand Header */}
+        <div className="w-full flex items-center justify-center mb-6 select-none">
+          <Image
+            src="/brand/AppChurch-Tesouraria.webp"
+            alt="AppChurch"
+            width={800}
+            height={400}
+            className="h-[70px] w-auto object-contain mx-auto select-none"
+            priority
+            draggable={false}
+          />
         </div>
 
         {/* Alerta de Erro de Conexão */}

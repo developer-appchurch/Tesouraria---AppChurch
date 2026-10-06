@@ -2,7 +2,8 @@
 
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { RotateCw, ShieldCheck, Menu, TrendingUp } from 'lucide-react';
-import { LancamentoTesouraria } from '@/lib/types';
+import { LancamentoTesouraria, UnidadeCadastrada, MembroItem } from '@/lib/types';
+import { TreasuryService } from '@/lib/treasury-service';
 import { formatBRL } from '@/lib/utils';
 
 interface DashboardViewProps {
@@ -13,6 +14,8 @@ interface DashboardViewProps {
   onToggleMobileMenu?: () => void;
   isRefreshing?: boolean;
   onShowToast?: (msg: string) => void;
+  unidades?: UnidadeCadastrada[];
+  usuarioLogado?: MembroItem | null;
 }
 
 const NOMES_MESES = [
@@ -45,6 +48,93 @@ const NOMES_MESES_ABREV = [
   'DEZ',
 ];
 
+/**
+ * Converte qualquer representação de dia da semana (ex: 'Quarta-feira', 'quarta', 'Sábado', 'sab', 3)
+ * para o índice do JavaScript Date (0 = Domingo, 1 = Segunda, ..., 6 = Sábado).
+ */
+function getDiaSemanaIndex(dia?: string | number | null): number | null {
+  if (dia === undefined || dia === null) return null;
+
+  if (typeof dia === 'number' && Number.isInteger(dia)) {
+    if (dia >= 0 && dia <= 6) return dia;
+    if (dia === 7) return 0;
+    return null;
+  }
+
+  const str = String(dia).trim();
+  if (!str) return null;
+
+  const num = Number(str);
+  if (!isNaN(num) && Number.isInteger(num)) {
+    if (num >= 0 && num <= 6) return num;
+    if (num === 7) return 0;
+  }
+
+  const s = str
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+
+  if (s.includes('dom')) return 0;
+  if (s.includes('seg')) return 1;
+  if (s.includes('ter')) return 2;
+  if (s.includes('qua')) return 3;
+  if (s.includes('qui')) return 4;
+  if (s.includes('sex')) return 5;
+  if (s.includes('sab')) return 6;
+
+  return null;
+}
+
+/**
+ * Retorna quantas vezes cada dia da semana (0 = Dom a 6 = Sáb) ocorre em determinado mês e ano.
+ */
+function getContagemDiasSemanaNoMes(ano: number, mes: number): number[] {
+  const contagem = [0, 0, 0, 0, 0, 0, 0];
+  const totalDias = new Date(ano, mes, 0).getDate();
+  for (let d = 1; d <= totalDias; d++) {
+    const dow = new Date(ano, mes - 1, d).getDay();
+    contagem[dow]++;
+  }
+  return contagem;
+}
+
+/**
+ * Retorna quantas semanas o mês filtrado tem (calendário: do primeiro ao último dia do mês).
+ */
+function getSemanasDoMes(ano: number, mes: number): number {
+  const totalDias = new Date(ano, mes, 0).getDate();
+  const primeiroDiaSemana = new Date(ano, mes - 1, 1).getDay(); // 0 = Domingo
+  return Math.ceil((primeiroDiaSemana + totalDias) / 7);
+}
+
+/**
+ * Calcula quantos encontros uma lista de unidades ativas de menor nível teria no mês e ano.
+ * Regras:
+ * 1. Para cada unidade com dia_semana cadastrado: quantas vezes aquele dia da semana ocorre no mês filtrado.
+ * 2. Se a unidade cumprir os requisitos mas não tiver dia da semana cadastrado: em relação a quantas semanas o mês filtrado tem.
+ */
+function calcularEncontrosPrevistosMes(
+  ano: number,
+  mes: number,
+  unidades: UnidadeCadastrada[]
+): number {
+  if (!unidades || unidades.length === 0) return 0;
+  const contagemDias = getContagemDiasSemanaNoMes(ano, mes);
+  const semanasNoMes = getSemanasDoMes(ano, mes);
+
+  let total = 0;
+  for (const u of unidades) {
+    const dow = getDiaSemanaIndex(u.dia_semana);
+    if (dow !== null) {
+      total += contagemDias[dow];
+    } else {
+      total += semanasNoMes;
+    }
+  }
+  return total;
+}
+
 export const DashboardView: React.FC<DashboardViewProps> = ({
   lancamentos,
   anoSelecionado,
@@ -52,7 +142,31 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onRefresh,
   onToggleMobileMenu,
   isRefreshing = false,
+  unidades,
+  usuarioLogado,
 }) => {
+  const [unidadesCarregadas, setUnidadesCarregadas] = useState<UnidadeCadastrada[]>([]);
+
+  useEffect(() => {
+    let cancel = false;
+    const carregar = async () => {
+      try {
+        const data = await TreasuryService.fetchUnidadesCadastradas();
+        if (!cancel && data && data.length > 0) {
+          setUnidadesCarregadas(data);
+        }
+      } catch (err) {
+        console.warn('Erro ao carregar unidades no Dashboard:', err);
+      }
+    };
+    carregar();
+    return () => {
+      cancel = true;
+    };
+  }, [isRefreshing]);
+
+  const unidadesCadastradas = unidades && unidades.length > 0 ? unidades : unidadesCarregadas;
+
   const [mesSelecionado, setMesSelecionado] = useState<string>(() => {
     const hoje = new Date();
     const mesAtualIndex = hoje.getMonth();
@@ -141,15 +255,64 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   const totalMesGeral = totalMesPix + totalMesEspecie;
 
-  // Células ativas únicas
-  const celulasAtivas = useMemo(() => {
-    const setCelulas = new Set<string>();
-    lancamentos.forEach((l) => {
-      const nome = l.Célula || l.celulaNome;
-      if (nome) setCelulas.add(nome);
+  const NIVEL_TIPO_CELULA_ID = '320a19aa-7e16-457c-95e5-d8d3cbfe9945';
+  const IGREJA_ID_PADRAO = 'ff600f5f-b91f-4826-bde2-3976e718877c';
+
+  // Unidades mais baixas ativas na hierarquia da igreja do usuário logado:
+  // 1. ativo === true
+  // 2. Igreja relacionada ao usuário logado
+  // 3. nivel_tipo_id === '320a19aa-7e16-457c-95e5-d8d3cbfe9945' (se informado)
+  // 4. Não é pai de nenhuma outra unidade (ponta mais baixa da hierarquia)
+  const unidadesMaisBaixas = useMemo(() => {
+    if (!unidadesCadastradas || unidadesCadastradas.length === 0) {
+      return [];
+    }
+
+    // Igreja do usuário logado
+    const igrejaIdLogada = (
+      usuarioLogado?.igreja_id ||
+      usuarioLogado?.churchId ||
+      IGREJA_ID_PADRAO
+    ).trim().toLowerCase();
+
+    // Filtra as unidades vinculadas à igreja do usuário
+    const unidadesIgreja = unidadesCadastradas.filter((u) => {
+      if (!u.igreja_id) return true; // Se a listagem já veio filtrada pela igreja na API
+      return String(u.igreja_id).trim().toLowerCase() === igrejaIdLogada;
     });
-    return setCelulas.size > 0 ? setCelulas.size : 10;
-  }, [lancamentos]);
+
+    // Identifica todos os IDs de unidades que possuem filhas (são 'pai' de alguma unidade)
+    const idsQueSaoPais = new Set(
+      unidadesIgreja
+        .map((u) => u.pai_id)
+        .filter((paiId): paiId is string => Boolean(paiId && String(paiId).trim()))
+        .map((paiId) => String(paiId).trim().toLowerCase())
+    );
+
+    // Filtra apenas as unidades mais baixas na hierarquia (folhas / sem filhas):
+    return unidadesIgreja.filter((u) => {
+      // Regra 1: Apenas os ativos
+      if (u.ativo !== true) return false;
+
+      // Regra 2: Se tiver nivel_tipo_id, deve ser o nível mais baixo (célula)
+      if (u.nivel_tipo_id) {
+        if (String(u.nivel_tipo_id).trim().toLowerCase() !== NIVEL_TIPO_CELULA_ID.toLowerCase()) {
+          return false;
+        }
+      }
+
+      // Regra 3: Não pode ser pai de nenhuma outra unidade (garante a ponta mais baixa da hierarquia)
+      const idNorm = String(u.id).trim().toLowerCase();
+      if (idsQueSaoPais.has(idNorm)) {
+        return false;
+      }
+
+      return true;
+    });
+  }, [unidadesCadastradas, usuarioLogado]);
+
+  // Contagem de células ativas (unidades de menor nível ativas)
+  const celulasAtivas = unidadesMaisBaixas.length;
 
   const fatorMeses = useMemo(() => {
     if (isTodosMeses) {
@@ -160,10 +323,52 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     return 1;
   }, [isTodosMeses, isTodosAnos, anoSelecionado]);
 
+  // Cálculo de relatórios previstos:
+  // Quantos encontros de cada unidade de nível mais baixo ativa teriam dentro do mês filtrado:
+  // - Para unidades com dia_semana: quantas vezes aquele dia da semana ocorre dentro do mês.
+  // - Se não tiver dia_semana cadastrado: quantas semanas o mês filtrado tem.
   const relatoriosPrevistos = useMemo(() => {
-    const multAnos = isTodosAnos ? Math.max(1, anosDisponiveis.length) : 1;
-    return celulasAtivas * 4 * fatorMeses * multAnos;
-  }, [celulasAtivas, fatorMeses, isTodosAnos, anosDisponiveis]);
+    if (unidadesMaisBaixas.length === 0) {
+      const multAnos = isTodosAnos ? Math.max(1, anosDisponiveis.length) : 1;
+      return celulasAtivas * 4 * fatorMeses * multAnos;
+    }
+
+    const anoEfetivo = Number(anoSelecionado) || new Date().getFullYear();
+
+    if (isTodosMeses) {
+      const anos = isTodosAnos ? anosDisponiveis : [anoEfetivo];
+      let total = 0;
+      for (const anoItem of anos) {
+        const anoNum = Number(anoItem) || new Date().getFullYear();
+        const maxMes = anoNum === new Date().getFullYear() ? new Date().getMonth() + 1 : 12;
+        for (let m = 1; m <= maxMes; m++) {
+          total += calcularEncontrosPrevistosMes(anoNum, m, unidadesMaisBaixas);
+        }
+      }
+      return total;
+    }
+
+    const mesEfetivo = numMesSelecionado > 0 ? numMesSelecionado : new Date().getMonth() + 1;
+
+    if (isTodosAnos) {
+      let total = 0;
+      for (const anoItem of anosDisponiveis) {
+        total += calcularEncontrosPrevistosMes(Number(anoItem), mesEfetivo, unidadesMaisBaixas);
+      }
+      return total;
+    }
+
+    return calcularEncontrosPrevistosMes(anoEfetivo, mesEfetivo, unidadesMaisBaixas);
+  }, [
+    unidadesMaisBaixas,
+    celulasAtivas,
+    fatorMeses,
+    isTodosAnos,
+    isTodosMeses,
+    anoSelecionado,
+    numMesSelecionado,
+    anosDisponiveis,
+  ]);
 
   // Dados do gráfico
   const mesesGrafico = useMemo(() => {
@@ -181,7 +386,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           (acc, curr) => acc + Number(curr.valorPix ?? curr.ValorOferta ?? 0),
           0
         );
-        const previstos = celulasAtivas * 4;
+        const previstos =
+          unidadesMaisBaixas.length > 0
+            ? calcularEncontrosPrevistosMes(anoItem, Number(numMesSelecionado) || 1, unidadesMaisBaixas)
+            : celulasAtivas * 4;
         const confirmados = doAnoEMes.length;
         const perc = previstos > 0 && confirmados > 0 ? Math.min(100, Math.round((confirmados / previstos) * 100)) : 0;
         return {
@@ -211,8 +419,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         (acc, curr) => acc + Number(curr.valorPix ?? curr.ValorOferta ?? 0),
         0
       );
-      const multAnos = isTodosAnos ? Math.max(1, anosDisponiveis.length) : 1;
-      const previstos = celulasAtivas * 4 * multAnos;
+
+      let previstos = 0;
+      if (unidadesMaisBaixas.length > 0) {
+        if (isTodosAnos) {
+          for (const anoItem of anosDisponiveis) {
+            previstos += calcularEncontrosPrevistosMes(Number(anoItem), mesNum, unidadesMaisBaixas);
+          }
+        } else {
+          const anoEfetivo = Number(anoSelecionado) || new Date().getFullYear();
+          previstos = calcularEncontrosPrevistosMes(anoEfetivo, mesNum, unidadesMaisBaixas);
+        }
+      } else {
+        const multAnos = isTodosAnos ? Math.max(1, anosDisponiveis.length) : 1;
+        previstos = celulasAtivas * 4 * multAnos;
+      }
+
       const confirmados = doMes.length;
       const perc = previstos > 0 && confirmados > 0 ? Math.min(100, Math.round((confirmados / previstos) * 100)) : 0;
 
@@ -226,7 +448,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         perc,
       };
     });
-  }, [isModoAnosNoGrafico, anosDisponiveis, lancamentosValidados, numMesSelecionado, celulasAtivas, isTodosAnos, anoSelecionado]);
+  }, [
+    isModoAnosNoGrafico,
+    anosDisponiveis,
+    lancamentosValidados,
+    numMesSelecionado,
+    unidadesMaisBaixas,
+    celulasAtivas,
+    isTodosAnos,
+    anoSelecionado,
+  ]);
 
   const maxOferta = useMemo(() => {
     const maxVal = Math.max(...mesesGrafico.map((m) => Math.max(m.esp, m.pix)), 0);
@@ -263,10 +494,51 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     const celulasPorSetor = new Map<string, Set<string>>();
     const entreguesPorSetor = new Map<string, number>();
 
+    // Identifica a igreja do usuário logado
+    const igrejaIdLogada = (
+      usuarioLogado?.igreja_id ||
+      usuarioLogado?.churchId ||
+      IGREJA_ID_PADRAO
+    ).trim().toLowerCase();
+
+    // Mapeamento de id do setor para nome
+    const mapaSetoresPorId = new Map<string, string>();
+    unidadesCadastradas.forEach((u) => {
+      mapaSetoresPorId.set(u.id, u.nome);
+    });
+
+    // Identifica todos os IDs de unidades que possuem filhas
+    const idsQueSaoPais = new Set(
+      unidadesCadastradas
+        .map((u) => u.pai_id)
+        .filter((paiId): paiId is string => Boolean(paiId && String(paiId).trim()))
+        .map((paiId) => String(paiId).trim().toLowerCase())
+    );
+
+    if (unidadesCadastradas.length > 0) {
+      unidadesCadastradas.forEach((u) => {
+        const isAtivo = u.ativo === true;
+        const matchNivel =
+          !u.nivel_tipo_id ||
+          String(u.nivel_tipo_id).trim().toLowerCase() === NIVEL_TIPO_CELULA_ID.toLowerCase();
+        const matchIgreja =
+          !u.igreja_id ||
+          String(u.igreja_id).trim().toLowerCase() === igrejaIdLogada;
+        const idNorm = String(u.id).trim().toLowerCase();
+        const ehMaisBaixa = !idsQueSaoPais.has(idNorm);
+
+        if (isAtivo && matchNivel && matchIgreja && ehMaisBaixa && u.pai_id) {
+          const nomeSetor = (mapaSetoresPorId.get(u.pai_id) || 'Safira').trim();
+          if (!celulasPorSetor.has(nomeSetor)) celulasPorSetor.set(nomeSetor, new Set());
+          celulasPorSetor.get(nomeSetor)!.add(u.nome);
+        }
+      });
+    }
+
     lancamentos.forEach((l) => {
       const setor = (l.Setor || l.setor || 'Safira').trim();
       const celula = (l.Célula || l.celulaNome || '').trim();
-      if (celula) {
+      if (celula && unidadesCadastradas.length === 0) {
         if (!celulasPorSetor.has(setor)) celulasPorSetor.set(setor, new Set());
         celulasPorSetor.get(setor)!.add(celula);
       }
@@ -292,8 +564,38 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     }
 
     const lista = Array.from(todosSetores).map((nome) => {
-      const ativas = (celulasPorSetor.get(nome) || new Set()).size || 1;
-      const previstos = ativas * 4 * fatorMeses;
+      const ativas = (celulasPorSetor.get(nome) || new Set()).size || 0;
+      const unidadesDoSetor = unidadesMaisBaixas.filter((u) => {
+        const nomeSetor = (mapaSetoresPorId.get(u.pai_id || '') || '').trim();
+        return nomeSetor.toLowerCase() === nome.toLowerCase();
+      });
+
+      let previstos = 0;
+      if (unidadesDoSetor.length > 0) {
+        if (isTodosMeses) {
+          const anos = isTodosAnos ? anosDisponiveis : [Number(anoSelecionado) || new Date().getFullYear()];
+          for (const anoItem of anos) {
+            const anoNum = Number(anoItem) || new Date().getFullYear();
+            const maxMes = anoNum === new Date().getFullYear() ? new Date().getMonth() + 1 : 12;
+            for (let m = 1; m <= maxMes; m++) {
+              previstos += calcularEncontrosPrevistosMes(anoNum, m, unidadesDoSetor);
+            }
+          }
+        } else {
+          const anoEfetivo = Number(anoSelecionado) || new Date().getFullYear();
+          const mesEfetivo = numMesSelecionado > 0 ? numMesSelecionado : new Date().getMonth() + 1;
+          if (isTodosAnos) {
+            for (const anoItem of anosDisponiveis) {
+              previstos += calcularEncontrosPrevistosMes(Number(anoItem), mesEfetivo, unidadesDoSetor);
+            }
+          } else {
+            previstos = calcularEncontrosPrevistosMes(anoEfetivo, mesEfetivo, unidadesDoSetor);
+          }
+        }
+      } else {
+        previstos = ativas * 4 * fatorMeses;
+      }
+
       const entregues = entreguesPorSetor.get(nome) || 0;
       let perc = 0;
       if (previstos > 0 && entregues > 0) {
@@ -304,7 +606,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
     lista.sort((a, b) => b.perc - a.perc || b.entregues - a.entregues);
     return lista;
-  }, [lancamentos, isTodosAnos, anoSelecionado, isTodosMeses, numMesSelecionado, fatorMeses]);
+  }, [
+    unidadesCadastradas,
+    unidadesMaisBaixas,
+    usuarioLogado,
+    lancamentos,
+    isTodosAnos,
+    anoSelecionado,
+    isTodosMeses,
+    numMesSelecionado,
+    fatorMeses,
+    anosDisponiveis,
+  ]);
 
   const totalLancadosMes = lancamentosTodosMesAtual.length;
   const totalValidadosMes = lancamentosMesAtual.length;

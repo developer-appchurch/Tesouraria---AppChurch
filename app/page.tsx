@@ -10,7 +10,7 @@ import { DashboardView } from '@/components/views/DashboardView';
 import { PermissoesView } from '@/components/views/PermissoesView';
 import { LoadingScreen } from '@/components/LoadingScreen';
 import { TreasuryService } from '@/lib/treasury-service';
-import { ViewMode, LancamentoTesouraria, PermissaoUsuario, MembroItem } from '@/lib/types';
+import { ViewMode, LancamentoTesouraria, PermissaoUsuario, MembroItem, UnidadeCadastrada } from '@/lib/types';
 
 const emptySubscribe = (callback: () => void) => {
   if (typeof window !== 'undefined') {
@@ -41,6 +41,7 @@ export default function TreasuryApp() {
 
   const [isInitialLoading, setIsInitialLoading] = useState<boolean>(true);
   const [lancamentos, setLancamentos] = useState<LancamentoTesouraria[]>([]);
+  const [unidadesCadastradas, setUnidadesCadastradas] = useState<UnidadeCadastrada[]>([]);
   const [usuarios, setUsuarios] = useState<PermissaoUsuario[]>([]);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [notificacao, setNotificacao] = useState<string | null>(null);
@@ -112,7 +113,13 @@ export default function TreasuryApp() {
         const user = await TreasuryService.getSessionUser();
         if (!user || !isSubscribed) return;
         setSessaoManual(user);
-        await carregarDados(false);
+        const [_, unids] = await Promise.all([
+          carregarDados(false),
+          TreasuryService.fetchUnidadesCadastradas(false),
+        ]);
+        if (unids && isSubscribed) {
+          setUnidadesCadastradas(unids);
+        }
       } catch (err) {
         console.warn('Erro ao carregar dados do Supabase:', err);
       } finally {
@@ -133,7 +140,8 @@ export default function TreasuryApp() {
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
     try {
-      const [ok] = await Promise.all([carregarDados(true), TreasuryService.fetchUnidadesCadastradas(true)]);
+      const [ok, unids] = await Promise.all([carregarDados(true), TreasuryService.fetchUnidadesCadastradas(true)]);
+      if (unids) setUnidadesCadastradas(unids);
       if (ok) showToast('Dados sincronizados com o Supabase com sucesso!');
     } catch (err) {
       console.warn('Erro ao atualizar dados:', err);
@@ -152,6 +160,9 @@ export default function TreasuryApp() {
     showToast(`Bem-vindo, ${membro.nome}!`);
     // A sessão acabou de ser criada: agora sim busca os dados
     carregarDados(true);
+    TreasuryService.fetchUnidadesCadastradas(true).then((u) => {
+      if (u) setUnidadesCadastradas(u);
+    });
   };
 
   const handleLogout = async () => {
@@ -301,6 +312,8 @@ export default function TreasuryApp() {
               isRefreshing={isRefreshing}
               onToggleMobileMenu={() => setIsMobileNavOpen((prev) => !prev)}
               onShowToast={showToast}
+              unidades={unidadesCadastradas}
+              usuarioLogado={usuarioLogado}
             />
           </div>
 
