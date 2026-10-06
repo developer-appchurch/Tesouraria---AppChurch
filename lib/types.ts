@@ -69,6 +69,22 @@ export interface LancamentoTesouraria {
 
 export type PerfilAcesso = 'admin' | 'tesoureiro_geral' | 'tesoureiro_congregacao' | 'auditor_fiscal' | 'visualizador';
 
+export interface TesourariaPermissaoItem {
+  id: string;
+  membro_id: string;
+  nome: string;
+  funcao?: string;
+  email?: string;
+  criado_em?: string;
+}
+
+export interface MembroBuscaItem {
+  id: string;
+  nome: string;
+  funcao?: string;
+  email?: string;
+}
+
 export interface PermissaoUsuario {
   id: string;
   user_id: string;

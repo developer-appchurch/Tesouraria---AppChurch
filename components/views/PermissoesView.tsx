@@ -1,786 +1,473 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Users,
   UserPlus,
   Search,
+  Trash2,
   Check,
-  X,
-  Lock,
-  Unlock,
-  Mail,
-  Edit2,
-  Save,
+  RotateCw,
+  Loader2,
   ShieldCheck,
+  UserCheck,
+  AlertCircle,
 } from 'lucide-react';
-import { PermissaoUsuario, PerfilAcesso } from '@/lib/types';
+import { TesourariaPermissaoItem, MembroBuscaItem, PermissaoUsuario } from '@/lib/types';
 import { TreasuryService } from '@/lib/treasury-service';
 
 interface PermissoesViewProps {
-  usuarios: PermissaoUsuario[];
-  onRefresh: () => void;
+  usuarios?: PermissaoUsuario[];
+  onRefresh?: () => void;
   onShowToast: (msg: string) => void;
 }
 
 export const PermissoesView: React.FC<PermissoesViewProps> = ({
-  usuarios,
   onRefresh,
   onShowToast,
 }) => {
-  const [searchQuery, setSearchQuery] = useState('');
-  const [selectedPerfil, setSelectedPerfil] = useState<string>('todos');
-  const [statusFilter, setStatusFilter] = useState<'todos' | 'ativos' | 'inativos'>('todos');
+  // Lista de permissões atuais na tabela tesouraria_permissao
+  const [permissoes, setPermissoes] = useState<TesourariaPermissaoItem[]>([]);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [filtroAutorizados, setFiltroAutorizados] = useState<string>('');
 
-  const [editingUser, setEditingUser] = useState<PermissaoUsuario | null>(null);
-  const [isAddUserModalOpen, setIsAddUserModalOpen] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
+  // Busca e inclusão de novos membros da tabela membros
+  const [termoBuscaMembro, setTermoBuscaMembro] = useState<string>('');
+  const [membrosEncontrados, setMembrosEncontrados] = useState<MembroBuscaItem[]>([]);
+  const [isBuscandoMembros, setIsBuscandoMembros] = useState<boolean>(false);
+  const [isAdicionandoId, setIsAdicionandoId] = useState<string | null>(null);
+  const [isRemovendoId, setIsRemovendoId] = useState<string | null>(null);
 
-  // New user form state
-  const [newUserForm, setNewUserForm] = useState<{
-    nome: string;
-    email: string;
-    cargo: string;
-    congregacao_nome: string;
-    perfil: PerfilAcesso;
-    acesso_tesouraria_ativo: boolean;
-  }>({
-    nome: '',
-    email: '',
-    cargo: 'Tesoureiro Local',
-    congregacao_nome: 'Safira',
-    perfil: 'tesoureiro_congregacao',
-    acesso_tesouraria_ativo: true,
-  });
+  // Confirmação de exclusão
+  const [membroParaRemover, setMembroParaRemover] = useState<TesourariaPermissaoItem | null>(null);
 
-  // Filter users
-  const filteredUsers = useMemo(() => {
-    return usuarios.filter((u) => {
-      const matchPerfil = selectedPerfil === 'todos' || u.perfil === selectedPerfil;
-      const matchStatus =
-        statusFilter === 'todos'
-          ? true
-          : statusFilter === 'ativos'
-          ? u.acesso_tesouraria_ativo
-          : !u.acesso_tesouraria_ativo;
-      const matchSearch =
-        !searchQuery ||
-        u.nome.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        u.email.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        u.cargo.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        u.congregacao_nome.toLowerCase().includes(searchQuery.toLowerCase());
+  // Carrega permissões atuais da tesouraria
+  const carregarPermissoes = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const res = await TreasuryService.fetchTesourariaPermissoes();
+      if (res.success && res.data) {
+        setPermissoes(res.data);
+      } else if (res.error) {
+        onShowToast(res.error);
+      }
+    } catch (e: any) {
+      console.warn('Erro ao carregar permissões:', e);
+      onShowToast('Erro ao carregar lista de permissões.');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [onShowToast]);
 
-      return matchPerfil && matchStatus && matchSearch;
-    });
-  }, [usuarios, selectedPerfil, statusFilter, searchQuery]);
-
-  // Quick stats
-  const stats = useMemo(() => {
-    const total = usuarios.length;
-    const ativos = usuarios.filter((u) => u.acesso_tesouraria_ativo).length;
-    const inativos = total - ativos;
-    const validadores = usuarios.filter(
-      (u) => u.permissoes && u.permissoes.validar_relatorios && u.acesso_tesouraria_ativo
-    ).length;
-
-    return { total, ativos, inativos, validadores };
-  }, [usuarios]);
-
-  // Quick toggle access on/off
-  const handleToggleAccess = async (user: PermissaoUsuario) => {
-    const updated: PermissaoUsuario = {
-      ...user,
-      acesso_tesouraria_ativo: !user.acesso_tesouraria_ativo,
+  useEffect(() => {
+    let isCancelled = false;
+    const fetchPerms = async () => {
+      try {
+        const res = await TreasuryService.fetchTesourariaPermissoes();
+        if (!isCancelled && res.success && res.data) {
+          setPermissoes(res.data);
+        } else if (!isCancelled && res.error) {
+          onShowToast(res.error);
+        }
+      } catch (e: any) {
+        if (!isCancelled) {
+          console.warn('Erro ao carregar permissões:', e);
+          onShowToast('Erro ao carregar lista de permissões.');
+        }
+      } finally {
+        if (!isCancelled) {
+          setIsLoading(false);
+        }
+      }
     };
-    await TreasuryService.updatePermissaoUsuario(updated);
-    onShowToast(
-      updated.acesso_tesouraria_ativo
-        ? `Acesso ao app liberado para ${user.nome}.`
-        : `Acesso ao app revogado para ${user.nome}.`
+    fetchPerms();
+    return () => {
+      isCancelled = true;
+    };
+  }, [onShowToast]);
+
+  // Busca membros no banco com debounce
+  useEffect(() => {
+    const termo = termoBuscaMembro.trim();
+    if (!termo) return;
+
+    let isCancelled = false;
+    const timer = setTimeout(async () => {
+      setIsBuscandoMembros(true);
+      try {
+        const res = await TreasuryService.buscarMembrosIgreja(termo);
+        if (!isCancelled && res.success && res.data) {
+          setMembrosEncontrados(res.data);
+        } else if (!isCancelled) {
+          setMembrosEncontrados([]);
+        }
+      } catch (e) {
+        console.warn('Erro na busca de membros:', e);
+      } finally {
+        if (!isCancelled) {
+          setIsBuscandoMembros(false);
+        }
+      }
+    }, 300);
+
+    return () => {
+      isCancelled = true;
+      clearTimeout(timer);
+    };
+  }, [termoBuscaMembro]);
+
+  // Conjunto de membro_ids já com permissão concedida
+  const membroIdsAutorizadosSet = useMemo(() => {
+    return new Set(permissoes.map((p) => String(p.membro_id)));
+  }, [permissoes]);
+
+  // Filtro de pesquisa na lista de autorizados
+  const autorizadosFiltrados = useMemo(() => {
+    const f = filtroAutorizados.toLowerCase().trim();
+    if (!f) return permissoes;
+    return permissoes.filter(
+      (p) =>
+        p.nome.toLowerCase().includes(f) ||
+        (p.funcao && p.funcao.toLowerCase().includes(f)) ||
+        (p.email && p.email.toLowerCase().includes(f))
     );
-    onRefresh();
-  };
+  }, [permissoes, filtroAutorizados]);
 
-  const getPresetPermissions = (perfil: PerfilAcesso) => {
-    switch (perfil) {
-      case 'admin':
-      case 'tesoureiro_geral':
-        return {
-          validar_relatorios: true,
-          rejeitar_relatorios: true,
-          editar_envelopes: true,
-          visualizar_dashboard: true,
-          gerenciar_permissoes: perfil === 'admin',
-          exportar_dados: true,
-          excluir_relatorios: perfil === 'admin',
-          auditar_conferencia: true,
-        };
-      case 'tesoureiro_congregacao':
-        return {
-          validar_relatorios: false,
-          rejeitar_relatorios: false,
-          editar_envelopes: true,
-          visualizar_dashboard: true,
-          gerenciar_permissoes: false,
-          exportar_dados: true,
-          excluir_relatorios: false,
-          auditar_conferencia: false,
-        };
-      case 'auditor_fiscal':
-        return {
-          validar_relatorios: false,
-          rejeitar_relatorios: false,
-          editar_envelopes: false,
-          visualizar_dashboard: true,
-          gerenciar_permissoes: false,
-          exportar_dados: true,
-          excluir_relatorios: false,
-          auditar_conferencia: true,
-        };
-      case 'visualizador':
-      default:
-        return {
-          validar_relatorios: false,
-          rejeitar_relatorios: false,
-          editar_envelopes: false,
-          visualizar_dashboard: true,
-          gerenciar_permissoes: false,
-          exportar_dados: false,
-          excluir_relatorios: false,
-          auditar_conferencia: false,
-        };
+  // Ação: Adicionar membro à tabela tesouraria_permissao
+  const handleAdicionarMembro = async (membro: MembroBuscaItem) => {
+    setIsAdicionandoId(membro.id);
+    try {
+      const res = await TreasuryService.adicionarPermissaoTesouraria(membro.id);
+      if (res.success) {
+        onShowToast(`Acesso concedido para ${membro.nome}!`);
+        // Adiciona otimista
+        setPermissoes((prev) => [
+          ...prev,
+          {
+            id: `temp-${Date.now()}`,
+            membro_id: membro.id,
+            nome: membro.nome,
+            funcao: membro.funcao || 'Membro',
+            email: membro.email || '',
+            criado_em: new Date().toISOString(),
+          },
+        ]);
+        // Recarrega dados reais
+        await carregarPermissoes();
+        onRefresh?.();
+      } else {
+        onShowToast(`Não foi possível conceder acesso: ${res.error || res.message}`);
+      }
+    } catch (e: any) {
+      onShowToast(`Erro ao conceder acesso: ${e?.message || 'Falha no servidor'}`);
+    } finally {
+      setIsAdicionandoId(null);
     }
   };
 
-  const handleSaveEditUser = async () => {
-    if (!editingUser) return;
-    setIsSaving(true);
-    await TreasuryService.updatePermissaoUsuario(editingUser);
-    setIsSaving(false);
-    onShowToast(`Permissões de ${editingUser.nome} atualizadas.`);
-    setEditingUser(null);
-    onRefresh();
-  };
+  // Ação: Remover membro da tabela tesouraria_permissao
+  const handleConfirmarRemover = async () => {
+    if (!membroParaRemover) return;
+    const item = membroParaRemover;
+    setIsRemovendoId(item.id);
+    try {
+      const res = await TreasuryService.removerPermissaoTesouraria({
+        id: item.id.startsWith('temp-') ? undefined : item.id,
+        membro_id: item.membro_id,
+      });
 
-  const handleCreateNewUser = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newUserForm.nome || !newUserForm.email) {
-      alert('Preencha nome e e-mail do usuário.');
-      return;
-    }
-
-    const novo: PermissaoUsuario = {
-      id: `usr-${Date.now()}`,
-      user_id: `auth-${Date.now()}`,
-      nome: newUserForm.nome,
-      email: newUserForm.email,
-      cargo: newUserForm.cargo,
-      congregacao_nome: newUserForm.congregacao_nome,
-      setor: newUserForm.congregacao_nome,
-      perfil: newUserForm.perfil,
-      acesso_tesouraria_ativo: newUserForm.acesso_tesouraria_ativo,
-      permissoes: getPresetPermissions(newUserForm.perfil),
-      criado_em: new Date().toISOString().slice(0, 10),
-      ultimo_acesso: 'Nunca acessou',
-    };
-
-    setIsSaving(true);
-    await TreasuryService.createPermissaoUsuario(novo);
-    setIsSaving(false);
-    setIsAddUserModalOpen(false);
-    onShowToast(`Usuário ${novo.nome} cadastrado com sucesso!`);
-    setNewUserForm({
-      nome: '',
-      email: '',
-      cargo: 'Tesoureiro Local',
-      congregacao_nome: 'Safira',
-      perfil: 'tesoureiro_congregacao',
-      acesso_tesouraria_ativo: true,
-    });
-    onRefresh();
-  };
-
-  const getPerfilLabel = (perfil: PerfilAcesso) => {
-    switch (perfil) {
-      case 'admin':
-        return 'Administrador Geral';
-      case 'tesoureiro_geral':
-        return 'Tesoureiro Geral';
-      case 'tesoureiro_congregacao':
-        return 'Tesoureiro de Setor/Célula';
-      case 'auditor_fiscal':
-        return 'Auditor Fiscal';
-      case 'visualizador':
-        return 'Visualizador';
+      if (res.success) {
+        onShowToast(`Acesso de ${item.nome} removido com sucesso.`);
+        setPermissoes((prev) => prev.filter((p) => p.membro_id !== item.membro_id && p.id !== item.id));
+        setMembroParaRemover(null);
+        await carregarPermissoes();
+        onRefresh?.();
+      } else {
+        onShowToast(`Erro ao remover permissão: ${res.error}`);
+      }
+    } catch (e: any) {
+      onShowToast(`Erro ao remover permissão: ${e?.message}`);
+    } finally {
+      setIsRemovendoId(null);
     }
   };
 
   return (
-    <div className="p-3.5 sm:p-6 space-y-6 max-w-[1600px] mx-auto text-slate-100">
-      {/* Top Banner */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-[#24293f] p-5 rounded-xl border border-[#323955] shadow-xs">
-        <div>
-          <h1 className="text-xl font-bold text-white tracking-tight flex items-center gap-2">
-            <ShieldCheck className="w-6 h-6 text-indigo-400" />
-            Permissões de Acesso ao App da Tesouraria
-          </h1>
-          <p className="text-xs text-slate-400 mt-0.5">
-            Marque e gerencie quais usuários e tesoureiros terão autorização para operar o sistema financeiro
-          </p>
+    <div className="p-3.5 sm:p-6 space-y-5 max-w-[1400px] mx-auto text-slate-100">
+      {/* BLOCO 1: PESQUISAR E ADICIONAR NOVO MEMBRO */}
+      <div className="bg-[#1b2033] border border-[#2d3654] rounded-xl p-4 sm:p-5 shadow-lg space-y-3">
+        <div className="flex items-center gap-2 text-white font-bold text-sm sm:text-base">
+          <UserPlus className="w-5 h-5 text-indigo-400" />
+          <span>Adicionar Novo Membro com Acesso</span>
+        </div>
+        <p className="text-xs text-slate-400">
+          Pesquise o nome do membro cadastrado na igreja para conceder acesso imediato ao aplicativo da Tesouraria.
+        </p>
+
+        {/* Campo de Busca de Membros */}
+        <div className="relative">
+          <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input
+            type="text"
+            placeholder="Digite o nome do membro para buscar..."
+            value={termoBuscaMembro}
+            onChange={(e) => {
+              const val = e.target.value;
+              setTermoBuscaMembro(val);
+              if (!val.trim()) {
+                setMembrosEncontrados([]);
+                setIsBuscandoMembros(false);
+              }
+            }}
+            className="w-full bg-[#111628] border border-[#2b3558] text-sm text-white pl-10 pr-10 py-2.5 rounded-lg focus:outline-none focus:border-indigo-400 placeholder:text-slate-500 shadow-inner"
+          />
+          {isBuscandoMembros && (
+            <Loader2 className="w-4 h-4 absolute right-3.5 top-1/2 -translate-y-1/2 animate-spin text-indigo-400" />
+          )}
         </div>
 
-        <button
-          onClick={() => setIsAddUserModalOpen(true)}
-          className="px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg transition-colors shadow-xs flex items-center gap-2 cursor-pointer self-start md:self-auto"
-        >
-          <UserPlus className="w-4 h-4" />
-          Conceder Permissão / Adicionar Usuário
-        </button>
+        {/* Resultados da Busca */}
+        {termoBuscaMembro.trim().length > 0 && (
+          <div className="mt-2 bg-[#12172b] border border-[#263155] rounded-lg overflow-hidden max-h-64 overflow-y-auto divide-y divide-[#1e2642]">
+            {isBuscandoMembros && membrosEncontrados.length === 0 ? (
+              <div className="p-4 text-center text-xs text-slate-400 flex items-center justify-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin text-indigo-400" />
+                <span>Buscando membros na igreja...</span>
+              </div>
+            ) : membrosEncontrados.length === 0 ? (
+              <div className="p-4 text-center text-xs text-slate-400">
+                Nenhum membro encontrado com o nome &ldquo;{termoBuscaMembro}&rdquo;.
+              </div>
+            ) : (
+              membrosEncontrados.map((m) => {
+                const jaPossuiAcesso = membroIdsAutorizadosSet.has(String(m.id));
+                const isCarregandoEste = isAdicionandoId === m.id;
+
+                return (
+                  <div
+                    key={m.id}
+                    className="p-3 flex items-center justify-between gap-3 hover:bg-[#181f3a] transition-colors"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-bold text-white truncate">{m.nome}</div>
+                      <div className="text-xs text-slate-400 flex items-center gap-2 mt-0.5">
+                        <span className="px-2 py-0.5 rounded bg-[#1c2444] text-indigo-300 text-[11px] font-semibold border border-[#2d3b66]">
+                          {m.funcao || 'Membro'}
+                        </span>
+                        {m.email && <span className="truncate text-slate-500">{m.email}</span>}
+                      </div>
+                    </div>
+
+                    <div>
+                      {jaPossuiAcesso ? (
+                        <span className="inline-flex items-center gap-1 text-xs font-bold text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-3 py-1.5 rounded-lg">
+                          <Check className="w-3.5 h-3.5 stroke-[3]" />
+                          <span>Já Autorizado</span>
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => handleAdicionarMembro(m)}
+                          disabled={isCarregandoEste}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white text-xs font-bold shadow-md transition-all cursor-pointer disabled:opacity-50"
+                        >
+                          {isCarregandoEste ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <UserPlus className="w-3.5 h-3.5" />
+                          )}
+                          <span>Conceder Acesso</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        )}
       </div>
 
-      {/* KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
-        <div className="bg-[#24293f] p-4 rounded-xl border border-[#323955] shadow-xs">
-          <div className="text-xs text-slate-400 mb-1">Total de Usuários Cadastrados</div>
-          <div className="text-2xl font-bold text-white font-mono tabular-nums">{stats.total}</div>
-          <div className="text-xs text-slate-400 mt-1">Liderança e equipe de tesouraria</div>
-        </div>
-
-        <div className="bg-[#24293f] p-4 rounded-xl border border-emerald-500/30 shadow-xs">
-          <div className="text-xs text-slate-400 mb-1">Acesso Permitido ao App</div>
-          <div className="text-2xl font-bold text-emerald-400 font-mono tabular-nums">
-            {stats.ativos}
+      {/* BLOCO 2: LISTA DE MEMBROS ATUALMENTE AUTORIZADOS */}
+      <div className="bg-[#1b2033] border border-[#2d3654] rounded-xl overflow-hidden shadow-lg space-y-0">
+        <div className="p-4 sm:p-5 border-b border-[#263155] flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <UserCheck className="w-5 h-5 text-emerald-400" />
+            <div>
+              <h2 className="text-base font-bold text-white">
+                Membros com Acesso Autorizado
+              </h2>
+              <p className="text-xs text-slate-400">
+                Total de {permissoes.length} {permissoes.length === 1 ? 'membro cadastrado' : 'membros cadastrados'} na tabela <code className="text-slate-300 font-mono text-[11px]">tesouraria_permissao</code>
+              </p>
+            </div>
           </div>
-          <div className="text-xs text-emerald-300 font-medium mt-1">
-            Autorizados a usar o app da tesouraria
-          </div>
-        </div>
 
-        <div className="bg-[#24293f] p-4 rounded-xl border border-rose-500/30 shadow-xs">
-          <div className="text-xs text-slate-400 mb-1">Acesso Bloqueado</div>
-          <div className="text-2xl font-bold text-rose-400 font-mono tabular-nums">
-            {stats.inativos}
-          </div>
-          <div className="text-xs text-rose-300 font-medium mt-1">Acesso revogado</div>
-        </div>
-
-        <div className="bg-[#24293f] p-4 rounded-xl border border-[#323955] shadow-xs">
-          <div className="text-xs text-slate-400 mb-1">Homologadores Autorizados</div>
-          <div className="text-2xl font-bold text-indigo-300 font-mono tabular-nums">
-            {stats.validadores}
-          </div>
-          <div className="text-xs text-slate-400 mt-1">Permissão de validar relatórios</div>
-        </div>
-      </div>
-
-      {/* Filter and Search Bar */}
-      <div className="bg-[#24293f] p-4 rounded-xl border border-[#323955] shadow-xs space-y-3">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-          <div className="flex flex-wrap items-center gap-2">
-            {/* Status Tabs */}
-            <div className="flex items-center p-1 bg-[#181c2b] rounded-lg text-xs border border-[#313956]">
-              <button
-                onClick={() => setStatusFilter('todos')}
-                className={`px-3 py-1.5 font-medium rounded-md transition-colors cursor-pointer ${
-                  statusFilter === 'todos'
-                    ? 'bg-indigo-600 text-white font-semibold'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                Todos ({stats.total})
-              </button>
-              <button
-                onClick={() => setStatusFilter('ativos')}
-                className={`px-3 py-1.5 font-medium rounded-md transition-colors cursor-pointer ${
-                  statusFilter === 'ativos'
-                    ? 'bg-emerald-600 text-white font-semibold'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                Ativos ({stats.ativos})
-              </button>
-              <button
-                onClick={() => setStatusFilter('inativos')}
-                className={`px-3 py-1.5 font-medium rounded-md transition-colors cursor-pointer ${
-                  statusFilter === 'inativos'
-                    ? 'bg-rose-600 text-white font-semibold'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                Bloqueados ({stats.inativos})
-              </button>
+          <div className="flex items-center gap-2.5 w-full sm:w-auto">
+            {/* Campo de Filtro da Lista */}
+            <div className="relative w-full sm:w-64">
+              <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="text"
+                placeholder="Filtrar por nome ou função..."
+                value={filtroAutorizados}
+                onChange={(e) => setFiltroAutorizados(e.target.value)}
+                className="w-full bg-[#111628] border border-[#263155] text-xs text-white pl-8 pr-3 py-1.5 rounded-lg focus:outline-none focus:border-indigo-400 placeholder:text-slate-500"
+              />
             </div>
 
-            {/* Perfil Dropdown */}
-            <select
-              value={selectedPerfil}
-              onChange={(e) => setSelectedPerfil(e.target.value)}
-              className="px-3 py-1.5 text-xs rounded-lg border border-[#313956] bg-[#181c2b] text-slate-200 focus:outline-none focus:border-indigo-400 cursor-pointer"
+            <button
+              onClick={() => {
+                carregarPermissoes();
+                onRefresh?.();
+              }}
+              disabled={isLoading}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#111628] border border-[#263155] hover:border-indigo-500/50 text-slate-300 hover:text-white text-xs font-semibold transition-all cursor-pointer shadow-xs active:scale-[0.98] shrink-0"
+              title="Recarregar permissões"
             >
-              <option value="todos">Todos os Perfis</option>
-              <option value="admin">Administrador Geral</option>
-              <option value="tesoureiro_geral">Tesoureiro Geral</option>
-              <option value="tesoureiro_congregacao">Tesoureiro de Setor/Célula</option>
-              <option value="auditor_fiscal">Auditor Fiscal</option>
-              <option value="visualizador">Visualizador</option>
-            </select>
-          </div>
-
-          {/* Search Input */}
-          <div className="relative sm:w-64">
-            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-            <input
-              type="text"
-              placeholder="Buscar por nome, email, cargo..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-8 pr-3 py-1.5 text-xs rounded-lg border border-[#313956] bg-[#181c2b] text-white placeholder-slate-500 focus:outline-none focus:border-indigo-400"
-            />
+              <RotateCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin text-indigo-400' : 'text-slate-400'}`} />
+              <span className="hidden sm:inline">Atualizar</span>
+            </button>
           </div>
         </div>
-      </div>
 
-      {/* Users Table */}
-      <div className="bg-[#181c2b] rounded-xl border border-[#323955] shadow-xs overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse text-xs">
-            <thead>
-              <tr className="bg-[#141724] border-b border-[#2a2f48] text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
-                <th className="py-3 px-4">Usuário</th>
-                <th className="py-3 px-4">Cargo / Função</th>
-                <th className="py-3 px-4">Setor / Congregação</th>
-                <th className="py-3 px-4">Perfil de Acesso</th>
-                <th className="py-3 px-4 text-center">Acesso ao App Tesouraria</th>
-                <th className="py-3 px-4">Permissões Específicas</th>
-                <th className="py-3 px-4 text-center">Ações</th>
+        {/* Tabela de Membros Autorizados */}
+        <div className="overflow-x-auto scrollbar-thin">
+          <table className="w-full text-xs text-left min-w-[600px]">
+            <thead className="bg-[#111628] text-slate-300 uppercase tracking-wider text-[11px] border-b border-[#263155]">
+              <tr>
+                <th className="px-5 py-3.5 font-bold">MEMBRO</th>
+                <th className="px-4 py-3.5 font-bold">FUNÇÃO (TABELA MEMBROS)</th>
+                <th className="px-4 py-3.5 font-bold text-center">STATUS</th>
+                <th className="px-5 py-3.5 font-bold text-center w-36">AÇÃO</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-[#23283c]">
-              {filteredUsers.length === 0 ? (
+            <tbody className="divide-y divide-[#263155]">
+              {isLoading ? (
                 <tr>
-                  <td colSpan={7} className="py-12 text-center text-slate-400">
-                    Nenhum usuário com permissões cadastrado no banco de dados.
+                  <td colSpan={4} className="text-center py-12 text-slate-400 text-sm bg-[#141a2e]">
+                    <div className="flex items-center justify-center gap-2">
+                      <Loader2 className="w-5 h-5 animate-spin text-indigo-400" />
+                      <span>Carregando membros autorizados...</span>
+                    </div>
+                  </td>
+                </tr>
+              ) : autorizadosFiltrados.length === 0 ? (
+                <tr>
+                  <td colSpan={4} className="text-center py-12 text-slate-400 text-sm bg-[#141a2e]">
+                    {filtroAutorizados
+                      ? 'Nenhum membro autorizado corresponde à busca.'
+                      : 'Nenhum membro possui permissão de acesso cadastrada na tesouraria.'}
                   </td>
                 </tr>
               ) : (
-                filteredUsers.map((user) => (
-                  <tr key={user.id} className="hover:bg-[#1e2336] transition-colors">
-                    <td className="py-3.5 px-4">
-                      <div className="font-semibold text-white">{user.nome}</div>
-                      <div className="text-[11px] text-slate-400 font-mono flex items-center gap-1 mt-0.5">
-                        <Mail className="w-3 h-3 text-slate-400" />
-                        {user.email}
-                      </div>
-                    </td>
+                autorizadosFiltrados.map((item) => {
+                  return (
+                    <tr
+                      key={item.id}
+                      className="bg-[#171d33] hover:bg-[#1d2540] transition-colors text-slate-200"
+                    >
+                      {/* Nome do Membro */}
+                      <td className="px-5 py-3.5 font-bold text-white text-sm">
+                        <div className="flex items-center gap-2">
+                          <div className="w-8 h-8 rounded-full bg-indigo-600/30 border border-indigo-500/40 text-indigo-300 flex items-center justify-center font-black text-xs shrink-0">
+                            {item.nome.charAt(0).toUpperCase()}
+                          </div>
+                          <div className="min-w-0">
+                            <span className="block truncate">{item.nome}</span>
+                            {item.email && (
+                              <span className="block text-[11px] font-normal text-slate-400 truncate">
+                                {item.email}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </td>
 
-                    <td className="py-3.5 px-4 text-slate-300 font-medium">{user.cargo}</td>
+                      {/* Função do Membro */}
+                      <td className="px-4 py-3.5 font-semibold text-slate-300">
+                        <span className="px-2.5 py-1 rounded-md bg-[#222a48] text-slate-200 text-xs border border-[#313c66]">
+                          {item.funcao || 'Membro'}
+                        </span>
+                      </td>
 
-                    <td className="py-3.5 px-4 text-slate-300">{user.congregacao_nome}</td>
+                      {/* Status */}
+                      <td className="px-4 py-3.5 text-center">
+                        <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-0.5 rounded-full">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                          Acesso Ativo
+                        </span>
+                      </td>
 
-                    <td className="py-3.5 px-4">
-                      <span className="text-white font-medium block">
-                        {getPerfilLabel(user.perfil)}
-                      </span>
-                      <span className="text-[10px] text-slate-500 font-mono">
-                        Último acesso: {user.ultimo_acesso || 'Nunca'}
-                      </span>
-                    </td>
-
-                    {/* DIRECT TOGGLE FOR APP ACCESS AS REQUESTED */}
-                    <td className="py-3.5 px-4 text-center">
-                      <button
-                        onClick={() => handleToggleAccess(user)}
-                        className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer ${
-                          user.acesso_tesouraria_ativo
-                            ? 'bg-emerald-950 text-emerald-300 hover:bg-emerald-900 border border-emerald-500/40'
-                            : 'bg-rose-950 text-rose-300 hover:bg-rose-900 border border-rose-500/40'
-                        }`}
-                        title="Clique para alternar permissão de acesso ao app"
-                      >
-                        {user.acesso_tesouraria_ativo ? (
-                          <>
-                            <Unlock className="w-3.5 h-3.5 text-emerald-400" />
-                            <span>Permitido</span>
-                          </>
-                        ) : (
-                          <>
-                            <Lock className="w-3.5 h-3.5 text-rose-400" />
-                            <span>Bloqueado</span>
-                          </>
-                        )}
-                      </button>
-                    </td>
-
-                    {/* Specific Permissions badges */}
-                    <td className="py-3.5 px-4">
-                      <div className="flex flex-wrap gap-1 text-[11px]">
-                        {user.permissoes && user.permissoes.validar_relatorios && (
-                          <span className="px-1.5 py-0.5 bg-[#252a40] text-emerald-300 border border-emerald-500/30 rounded text-[10px] font-medium">
-                            Validar
-                          </span>
-                        )}
-                        {user.permissoes && user.permissoes.editar_envelopes && (
-                          <span className="px-1.5 py-0.5 bg-[#252a40] text-indigo-300 border border-indigo-500/30 rounded text-[10px] font-medium">
-                            Envelopes
-                          </span>
-                        )}
-                        {user.permissoes && user.permissoes.visualizar_dashboard && (
-                          <span className="px-1.5 py-0.5 bg-[#252a40] text-cyan-300 border border-cyan-500/30 rounded text-[10px] font-medium">
-                            Dashboard
-                          </span>
-                        )}
-                        {user.permissoes && user.permissoes.gerenciar_permissoes && (
-                          <span className="px-1.5 py-0.5 bg-purple-950 text-purple-300 border border-purple-500/30 rounded text-[10px] font-medium">
-                            Admin
-                          </span>
-                        )}
-                      </div>
-                    </td>
-
-                    <td className="py-3.5 px-4 text-center">
-                      <button
-                        onClick={() => setEditingUser({ ...user })}
-                        className="px-2.5 py-1.5 text-xs font-medium text-slate-200 bg-[#252a40] hover:bg-[#323956] border border-[#394164] rounded-lg transition-colors inline-flex items-center gap-1 cursor-pointer"
-                      >
-                        <Edit2 className="w-3.5 h-3.5 text-indigo-400" />
-                        Editar
-                      </button>
-                    </td>
-                  </tr>
-                ))
+                      {/* Ação: Remover Permissão */}
+                      <td className="px-5 py-3.5 text-center">
+                        <button
+                          onClick={() => setMembroParaRemover(item)}
+                          disabled={isRemovendoId === item.id}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 hover:text-rose-200 border border-rose-500/40 text-xs font-bold transition-all cursor-pointer active:scale-95"
+                          title="Remover acesso deste membro à tesouraria"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Remover Acesso</span>
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
         </div>
       </div>
 
-      {/* Edit User Modal */}
-      {editingUser && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4 overflow-y-auto">
-          <div className="bg-[#181c2b] rounded-xl shadow-2xl border border-[#323955] max-w-xl w-full p-6 my-8 text-slate-100">
-            <div className="flex items-center justify-between pb-4 border-b border-[#2d334d]">
+      {/* Modal de Confirmação de Remoção de Acesso */}
+      {membroParaRemover && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xs animate-in fade-in duration-150">
+          <div className="bg-[#1b2033] border border-[#2d3654] rounded-2xl w-full max-w-md p-5 sm:p-6 shadow-2xl text-slate-100 space-y-4 animate-in zoom-in-95 duration-150">
+            <div className="flex items-center gap-3">
+              <div className="p-3 rounded-xl bg-rose-500/20 text-rose-400 border border-rose-500/30">
+                <AlertCircle className="w-6 h-6" />
+              </div>
               <div>
-                <h2 className="text-base font-bold text-white">
-                  Editar Permissões: {editingUser.nome}
-                </h2>
-                <p className="text-xs text-slate-400">{editingUser.email}</p>
-              </div>
-              <button
-                onClick={() => setEditingUser(null)}
-                className="p-1.5 text-slate-400 hover:text-white hover:bg-[#252a40] rounded-lg cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="py-4 space-y-4 text-xs text-slate-200">
-              {/* Master Access Switch */}
-              <div className="p-3.5 rounded-lg border border-[#323955] bg-[#141724] flex items-center justify-between">
-                <div>
-                  <span className="font-bold text-white block">
-                    Permissão de Acesso ao App da Tesouraria
-                  </span>
-                  <span className="text-slate-400 text-[11px]">
-                    Habilita ou bloqueia o uso do aplicativo financeiro para este usuário
-                  </span>
-                </div>
-                <input
-                  type="checkbox"
-                  checked={editingUser.acesso_tesouraria_ativo}
-                  onChange={(e) =>
-                    setEditingUser({
-                      ...editingUser,
-                      acesso_tesouraria_ativo: e.target.checked,
-                    })
-                  }
-                  className="w-5 h-5 rounded border-slate-400 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
-                />
-              </div>
-
-              {/* Perfil & Setor */}
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1">
-                    Perfil de Acesso
-                  </label>
-                  <select
-                    value={editingUser.perfil}
-                    onChange={(e) => {
-                      const newPerfil = e.target.value as PerfilAcesso;
-                      setEditingUser({
-                        ...editingUser,
-                        perfil: newPerfil,
-                        permissoes: getPresetPermissions(newPerfil),
-                      });
-                    }}
-                    className="w-full px-2.5 py-2 text-xs rounded-lg border border-[#323955] bg-[#141724] text-white"
-                  >
-                    <option value="admin">Administrador Geral</option>
-                    <option value="tesoureiro_geral">Tesoureiro Geral</option>
-                    <option value="tesoureiro_congregacao">Tesoureiro de Setor/Célula</option>
-                    <option value="auditor_fiscal">Auditor Fiscal</option>
-                    <option value="visualizador">Visualizador</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1">
-                    Setor Vinculado
-                  </label>
-                  <input
-                    type="text"
-                    value={editingUser.congregacao_nome}
-                    onChange={(e) =>
-                      setEditingUser({
-                        ...editingUser,
-                        congregacao_nome: e.target.value,
-                        setor: e.target.value,
-                      })
-                    }
-                    className="w-full px-2.5 py-2 text-xs rounded-lg border border-[#323955] bg-[#141724] text-white"
-                  />
-                </div>
-              </div>
-
-              {/* Granular Permissions Checkboxes */}
-              <div>
-                <label className="block text-xs font-bold text-white mb-2">
-                  Matriz de Permissões
-                </label>
-                <div className="space-y-2.5 border border-[#323955] p-3 rounded-lg bg-[#141724]">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={editingUser.permissoes?.validar_relatorios || false}
-                      onChange={(e) =>
-                        setEditingUser({
-                          ...editingUser,
-                          permissoes: {
-                            ...editingUser.permissoes,
-                            validar_relatorios: e.target.checked,
-                          },
-                        })
-                      }
-                      className="rounded border-slate-400 text-emerald-600 focus:ring-emerald-500"
-                    />
-                    <span>Validar e homologar relatórios de envelopes</span>
-                  </label>
-
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={editingUser.permissoes?.editar_envelopes || false}
-                      onChange={(e) =>
-                        setEditingUser({
-                          ...editingUser,
-                          permissoes: {
-                            ...editingUser.permissoes,
-                            editar_envelopes: e.target.checked,
-                          },
-                        })
-                      }
-                      className="rounded border-slate-400 text-indigo-600 focus:ring-indigo-500"
-                    />
-                    <span>Editar valores de envelopes e células</span>
-                  </label>
-
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={editingUser.permissoes?.visualizar_dashboard || false}
-                      onChange={(e) =>
-                        setEditingUser({
-                          ...editingUser,
-                          permissoes: {
-                            ...editingUser.permissoes,
-                            visualizar_dashboard: e.target.checked,
-                          },
-                        })
-                      }
-                      className="rounded border-slate-400 text-cyan-600 focus:ring-cyan-500"
-                    />
-                    <span>Visualizar dashboard executivo e gráficos</span>
-                  </label>
-
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={editingUser.permissoes?.gerenciar_permissoes || false}
-                      onChange={(e) =>
-                        setEditingUser({
-                          ...editingUser,
-                          permissoes: {
-                            ...editingUser.permissoes,
-                            gerenciar_permissoes: e.target.checked,
-                          },
-                        })
-                      }
-                      className="rounded border-slate-400 text-purple-600 focus:ring-purple-500"
-                    />
-                    <span>Gerenciar usuários e permissões do app</span>
-                  </label>
-
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={editingUser.permissoes?.exportar_dados || false}
-                      onChange={(e) =>
-                        setEditingUser({
-                          ...editingUser,
-                          permissoes: {
-                            ...editingUser.permissoes,
-                            exportar_dados: e.target.checked,
-                          },
-                        })
-                      }
-                      className="rounded border-slate-400 text-emerald-600 focus:ring-emerald-500"
-                    />
-                    <span>Exportar relatórios</span>
-                  </label>
-                </div>
+                <h3 className="text-base font-bold text-white">Remover Acesso à Tesouraria</h3>
+                <p className="text-xs text-slate-400 mt-0.5">Esta ação revogará a permissão do usuário.</p>
               </div>
             </div>
 
-            <div className="flex items-center justify-end gap-2.5 pt-4 border-t border-[#2d334d]">
+            <div className="p-3 rounded-lg bg-[#12172b] border border-[#263155] text-xs text-slate-300 space-y-1">
+              <div>
+                <strong className="text-white">Membro:</strong> {membroParaRemover.nome}
+              </div>
+              <div>
+                <strong className="text-white">Função:</strong> {membroParaRemover.funcao || 'Membro'}
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-400">
+              Tem certeza que deseja excluir este usuário da tabela <code className="text-rose-300 font-mono text-[11px]">tesouraria_permissao</code>? Ele deixará de ter acesso ao aplicativo.
+            </p>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2">
               <button
                 type="button"
-                onClick={() => setEditingUser(null)}
-                className="px-4 py-2 text-xs font-medium text-slate-300 hover:text-white hover:bg-[#252a40] rounded-lg transition-colors cursor-pointer"
+                onClick={() => setMembroParaRemover(null)}
+                className="px-3.5 py-2 rounded-lg bg-[#242b45] hover:bg-[#2d3656] text-slate-300 text-xs font-bold cursor-pointer transition-all"
               >
                 Cancelar
               </button>
               <button
                 type="button"
-                disabled={isSaving}
-                onClick={handleSaveEditUser}
-                className="px-5 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg transition-colors shadow-xs flex items-center gap-1.5 cursor-pointer"
+                onClick={handleConfirmarRemover}
+                disabled={isRemovendoId !== null}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold shadow-md cursor-pointer transition-all disabled:opacity-50"
               >
-                <Save className="w-4 h-4" />
-                Salvar Alterações
+                {isRemovendoId !== null ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Trash2 className="w-3.5 h-3.5" />
+                )}
+                <span>Confirmar e Remover</span>
               </button>
             </div>
-          </div>
-        </div>
-      )}
-
-      {/* Add User Modal */}
-      {isAddUserModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4 overflow-y-auto">
-          <div className="bg-[#181c2b] rounded-xl shadow-2xl border border-[#323955] max-w-lg w-full p-6 my-8 text-slate-100">
-            <div className="flex items-center justify-between pb-4 border-b border-[#2d334d]">
-              <h2 className="text-base font-bold text-white">Conceder Permissão a Novo Usuário</h2>
-              <button
-                onClick={() => setIsAddUserModalOpen(false)}
-                className="p-1.5 text-slate-400 hover:text-white hover:bg-[#252a40] rounded-lg cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <form onSubmit={handleCreateNewUser} className="py-4 space-y-3.5 text-xs text-slate-200">
-              <div>
-                <label className="block font-semibold text-slate-300 mb-1">Nome Completo</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="Ex: Junio Fonteles"
-                  value={newUserForm.nome}
-                  onChange={(e) => setNewUserForm({ ...newUserForm, nome: e.target.value })}
-                  className="w-full px-3 py-2 text-xs rounded-lg border border-[#323955] bg-[#141724] text-white focus:outline-none focus:border-indigo-400"
-                />
-              </div>
-
-              <div>
-                <label className="block font-semibold text-slate-300 mb-1">E-mail</label>
-                <input
-                  type="email"
-                  required
-                  placeholder="exemplo@pazchurch.com"
-                  value={newUserForm.email}
-                  onChange={(e) => setNewUserForm({ ...newUserForm, email: e.target.value })}
-                  className="w-full px-3 py-2 text-xs rounded-lg border border-[#323955] bg-[#141724] text-white focus:outline-none focus:border-indigo-400"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block font-semibold text-slate-300 mb-1">Cargo / Função</label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="Ex: Líder de Setor"
-                    value={newUserForm.cargo}
-                    onChange={(e) => setNewUserForm({ ...newUserForm, cargo: e.target.value })}
-                    className="w-full px-3 py-2 text-xs rounded-lg border border-[#323955] bg-[#141724] text-white focus:outline-none focus:border-indigo-400"
-                  />
-                </div>
-
-                <div>
-                  <label className="block font-semibold text-slate-300 mb-1">Setor</label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="Ex: Safira"
-                    value={newUserForm.congregacao_nome}
-                    onChange={(e) =>
-                      setNewUserForm({ ...newUserForm, congregacao_nome: e.target.value })
-                    }
-                    className="w-full px-3 py-2 text-xs rounded-lg border border-[#323955] bg-[#141724] text-white focus:outline-none focus:border-indigo-400"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block font-semibold text-slate-300 mb-1">Perfil de Acesso</label>
-                <select
-                  value={newUserForm.perfil}
-                  onChange={(e) =>
-                    setNewUserForm({ ...newUserForm, perfil: e.target.value as PerfilAcesso })
-                  }
-                  className="w-full px-3 py-2 text-xs rounded-lg border border-[#323955] bg-[#141724] text-white focus:outline-none focus:border-indigo-400 cursor-pointer"
-                >
-                  <option value="tesoureiro_congregacao">Tesoureiro de Setor/Célula</option>
-                  <option value="tesoureiro_geral">Tesoureiro Geral</option>
-                  <option value="admin">Administrador Geral</option>
-                  <option value="auditor_fiscal">Auditor Fiscal</option>
-                  <option value="visualizador">Visualizador</option>
-                </select>
-              </div>
-
-              <div className="p-3 bg-[#141724] border border-emerald-500/30 rounded-lg flex items-center justify-between">
-                <div>
-                  <span className="font-bold text-white block">Ativar Acesso Imediatamente</span>
-                  <span className="text-[11px] text-slate-400">
-                    O usuário já terá permissão liberada
-                  </span>
-                </div>
-                <input
-                  type="checkbox"
-                  checked={newUserForm.acesso_tesouraria_ativo}
-                  onChange={(e) =>
-                    setNewUserForm({ ...newUserForm, acesso_tesouraria_ativo: e.target.checked })
-                  }
-                  className="w-5 h-5 rounded border-slate-400 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
-                />
-              </div>
-
-              <div className="flex items-center justify-end gap-2.5 pt-4 border-t border-[#2d334d]">
-                <button
-                  type="button"
-                  onClick={() => setIsAddUserModalOpen(false)}
-                  className="px-4 py-2 text-xs font-medium text-slate-300 hover:text-white hover:bg-[#252a40] rounded-lg transition-colors cursor-pointer"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSaving}
-                  className="px-5 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg transition-colors shadow-xs cursor-pointer"
-                >
-                  Salvar e Conceder Acesso
-                </button>
-              </div>
-            </form>
           </div>
         </div>
       )}

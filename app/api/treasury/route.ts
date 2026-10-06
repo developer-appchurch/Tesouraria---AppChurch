@@ -344,6 +344,108 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ success: true, data: rows });
       }
 
+      case 'listar_permissoes': {
+        const { data: permissoes, error: permError } = await supabase
+          .from('tesouraria_permissao')
+          .select('*')
+          .eq('igreja_id', igrejaId)
+          .order('id', { ascending: true });
+
+        if (permError) throw new HttpError(400, permError.message);
+
+        const membroIds = (permissoes || []).map((p: any) => p.membro_id).filter(Boolean);
+
+        const membrosMap = new Map<string, { id: string; nome: string; funcao?: string; email?: string }>();
+        if (membroIds.length > 0) {
+          const { data: membrosList } = await supabase
+            .from('membros')
+            .select('id, nome, funcao, email')
+            .in('id', membroIds);
+
+          (membrosList || []).forEach((m: any) => {
+            membrosMap.set(String(m.id), m);
+          });
+        }
+
+        const data = (permissoes || []).map((p: any) => {
+          const m = membrosMap.get(String(p.membro_id));
+          return {
+            id: String(p.id),
+            membro_id: String(p.membro_id),
+            nome: m?.nome || 'Membro da Igreja',
+            funcao: m?.funcao || 'Membro',
+            email: m?.email || '',
+            criado_em: p.criado_em || p.created_at || null,
+          };
+        });
+
+        return NextResponse.json({ success: true, data });
+      }
+
+      case 'buscar_membros': {
+        const busca = String(params.busca || '').trim();
+        let q = supabase
+          .from('membros')
+          .select('id, nome, funcao, email')
+          .eq('igreja_id', igrejaId)
+          .order('nome', { ascending: true })
+          .limit(40);
+
+        if (busca) {
+          q = q.ilike('nome', `%${busca}%`);
+        }
+
+        const { data, error } = await q;
+        if (error) throw new HttpError(400, error.message);
+        return NextResponse.json({ success: true, data: data || [] });
+      }
+
+      case 'adicionar_permissao': {
+        const membroId = String(params.membro_id || '').trim();
+        if (!membroId) throw new HttpError(400, 'membro_id é obrigatório.');
+
+        const { data: existente } = await supabase
+          .from('tesouraria_permissao')
+          .select('id')
+          .eq('membro_id', membroId)
+          .eq('igreja_id', igrejaId)
+          .maybeSingle();
+
+        if (existente) {
+          return NextResponse.json({ success: true, data: existente, message: 'Usuário já possui permissão.' });
+        }
+
+        const { data, error } = await supabase
+          .from('tesouraria_permissao')
+          .insert({
+            membro_id: membroId,
+            igreja_id: igrejaId,
+          })
+          .select('*')
+          .single();
+
+        if (error) throw new HttpError(400, error.message);
+        return NextResponse.json({ success: true, data });
+      }
+
+      case 'remover_permissao': {
+        const id = params.id ? String(params.id).trim() : null;
+        const membroId = params.membro_id ? String(params.membro_id).trim() : null;
+
+        if (!id && !membroId) throw new HttpError(400, 'ID ou membro_id é obrigatório para remover permissão.');
+
+        let q = supabase.from('tesouraria_permissao').delete().eq('igreja_id', igrejaId);
+        if (id) {
+          q = q.eq('id', id);
+        } else if (membroId) {
+          q = q.eq('membro_id', membroId);
+        }
+
+        const { error } = await q;
+        if (error) throw new HttpError(400, error.message);
+        return NextResponse.json({ success: true });
+      }
+
       case 'relatorios_detalhados': {
         const data = await carregarRelatorios(supabase, igrejaId, params);
         return NextResponse.json({ success: true, data });

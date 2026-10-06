@@ -1,5 +1,5 @@
 import { getSupabaseClient } from './supabase';
-import { LancamentoTesouraria, PermissaoUsuario, AppChurchUser, MembroItem, UnidadeCadastrada } from './types';
+import { LancamentoTesouraria, PermissaoUsuario, AppChurchUser, MembroItem, UnidadeCadastrada, TesourariaPermissaoItem, MembroBuscaItem } from './types';
 import { LISTA_CELULAS } from './celulas-data';
 
 // In-memory cache for high performance and reduced query consumption
@@ -286,6 +286,7 @@ interface TreasuryApiResult<T = any> {
   data?: T;
   count?: number;
   error?: string;
+  message?: string;
   /** true quando a sessão expirou ou o usuário não tem permissão de tesouraria (401/403) */
   authError?: boolean;
 }
@@ -877,7 +878,45 @@ export const TreasuryService = {
   },
 
   /**
-   * Cadastra novo usuário na lista de permissões
+   * Lista todos os membros com acesso concedido na tabela tesouraria_permissao
+   */
+  async fetchTesourariaPermissoes(): Promise<{ success: boolean; data: TesourariaPermissaoItem[]; error?: string }> {
+    const res = await callTreasuryApi<TesourariaPermissaoItem[]>('listar_permissoes');
+    if (res.success && Array.isArray(res.data)) {
+      return { success: true, data: res.data };
+    }
+    return { success: false, data: [], error: res.error || 'Erro ao carregar permissões.' };
+  },
+
+  /**
+   * Busca membros na tabela membros da igreja para conceder acesso
+   */
+  async buscarMembrosIgreja(busca = ''): Promise<{ success: boolean; data: MembroBuscaItem[]; error?: string }> {
+    const res = await callTreasuryApi<MembroBuscaItem[]>('buscar_membros', { busca });
+    if (res.success && Array.isArray(res.data)) {
+      return { success: true, data: res.data };
+    }
+    return { success: false, data: [], error: res.error || 'Erro ao buscar membros.' };
+  },
+
+  /**
+   * Adiciona um membro à tabela tesouraria_permissao
+   */
+  async adicionarPermissaoTesouraria(membroId: string): Promise<{ success: boolean; error?: string; message?: string }> {
+    const res = await callTreasuryApi('adicionar_permissao', { membro_id: membroId });
+    return { success: Boolean(res.success), error: res.error, message: res.message };
+  },
+
+  /**
+   * Remove um membro da tabela tesouraria_permissao
+   */
+  async removerPermissaoTesouraria(params: { id?: string; membro_id?: string }): Promise<{ success: boolean; error?: string }> {
+    const res = await callTreasuryApi('remover_permissao', params);
+    return { success: Boolean(res.success), error: res.error };
+  },
+
+  /**
+   * Cadastra novo usuário na lista de permissões (legado)
    */
   async createPermissaoUsuario(novoUsuario: PermissaoUsuario): Promise<boolean> {
     if (memoryPermissoes) {
