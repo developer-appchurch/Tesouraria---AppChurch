@@ -74,13 +74,11 @@ export default function TreasuryApp() {
     }, 3500);
   }, []);
 
-  // Carrega relatórios e permissões (só com usuário logado — a API exige sessão)
+  // Carrega relatórios do ano ativo de forma otimizada (sem varrer o banco todo)
   const carregarDados = useCallback(
     async (forcar: boolean) => {
-      const [relResult, permResult] = await Promise.all([
-        TreasuryService.fetchRelatorios(forcar),
-        TreasuryService.fetchPermissoes(forcar),
-      ]);
+      const anoAlvo = anoValidar === 'todos' ? new Date().getFullYear() : Number(anoValidar) || new Date().getFullYear();
+      const relResult = await TreasuryService.fetchRelatorios(forcar, anoAlvo);
       if (relResult.error) {
         showToast(
           relResult.isAuthError
@@ -90,12 +88,9 @@ export default function TreasuryApp() {
       } else {
         setLancamentos(relResult.data || []);
       }
-      if (permResult.data) {
-        setUsuarios(permResult.data);
-      }
       return !relResult.error;
     },
-    [showToast]
+    [anoValidar, showToast]
   );
 
   // Carregamento inicial: só busca dados se já houver sessão salva

@@ -19,8 +19,8 @@ import { converterItemParaLancamento, MAPA_CELULAS_SETORES } from '@/lib/treasur
 const SETORES_PADRAO = ['Safira', 'Fire', 'White', 'Black', 'Azul', 'Amarelo', 'Legacy', 'Onix', 'Diamante', 'Titanium'];
 const PAGE_SIZE = 1000;
 const MAX_ROWS = 20000;
-const CACHE_TTL_MS = 5 * 60 * 1000;
-const AUTH_CACHE_TTL_MS = 60 * 1000;
+const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutos de cache em memória para unidades e membros
+const AUTH_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutos de cache para sessão e permissão
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const COLUNAS_RELATORIO =

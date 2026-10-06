@@ -501,18 +501,20 @@ export const TreasuryService = {
   },
 
   /**
-   * Obtém relatórios semanais da própria igreja via RLS do Supabase
-   * Utiliza cache em memória para evitar requisições frequentes
+   * Obtém relatórios semanais da própria igreja via API
+   * Utiliza cache em memória por período para evitar requisições frequentes ao Supabase
    */
   async fetchRelatorios(
-    forceRefresh = false
+    forceRefresh = false,
+    ano: number | string = new Date().getFullYear(),
+    mes?: number | string | null
   ): Promise<{ data: LancamentoTesouraria[]; error?: string; isAuthError?: boolean }> {
     const now = Date.now();
     if (!forceRefresh && memoryLancamentos && now - lastLancamentosFetch < CACHE_TTL_MS) {
       return { data: memoryLancamentos };
     }
 
-    const apiRes = await callTreasuryApi<any[]>('relatorios_detalhados', { ano: 'todos' });
+    const apiRes = await callTreasuryApi<any[]>('relatorios_detalhados', { ano, mes });
     if (apiRes.success && Array.isArray(apiRes.data)) {
       const formatted = apiRes.data.map((item: any, idx: number) => converterItemParaLancamento(item, idx));
       memoryLancamentos = formatted;
