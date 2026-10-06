@@ -228,6 +228,16 @@ export function converterItemParaLancamento(item: any, idx = 0): LancamentoTesou
     ? Number(item.numero_semana)
     : semanaNumero;
 
+  let ativo = true;
+  if (item.unidades && typeof item.unidades === 'object' && !Array.isArray(item.unidades)) {
+    if (item.unidades.ativo !== undefined) {
+      ativo = item.unidades.ativo === true;
+    }
+  }
+  if (item.ativo !== undefined) {
+    ativo = item.ativo === true;
+  }
+
   return {
     id,
     ID: item.ID || id,
@@ -264,6 +274,7 @@ export function converterItemParaLancamento(item: any, idx = 0): LancamentoTesou
     Membros: Number(item.qtd_membros || item.Membros || 0),
     Criancas: Number(item.qtd_criancas || item.Criancas || 0),
     observacoes: rawObs,
+    ativo,
   };
 }
 

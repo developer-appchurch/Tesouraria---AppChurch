@@ -62,9 +62,9 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
       ? Number(mesSelecionado)
       : null;
 
-  // 1. Extrair células do setor a partir do catálogo oficial e dos lançamentos reais
+  // 1. Extrair células do setor a partir do catálogo oficial e dos lançamentos reais (somente ativas: ativo !== false)
   const celulasDoSetor = useMemo(() => {
-    const celulasMap = new Map<string, { id: string; nome: string; lider: string; setor: string }>();
+    const celulasMap = new Map<string, { id: string; nome: string; lider: string; setor: string; ativo: boolean }>();
     const setorAlvo = (setorSelecionado || 'Safira').trim().toLowerCase();
 
     // 1.1 Adiciona células conhecidas do catálogo oficial
@@ -78,6 +78,7 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
             nome: nomeFormatado,
             lider: '-',
             setor: setorOficial,
+            ativo: true,
           });
         }
       }
@@ -99,7 +100,14 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
         continue;
       }
 
+      const isAtivo = l.ativo !== false;
       const key = `${setor.toLowerCase()}___${nome.toLowerCase()}`;
+
+      if (!isAtivo) {
+        celulasMap.delete(key);
+        continue;
+      }
+
       const existing = celulasMap.get(key);
       const lider = l.LiderCelula || l.liderCelula || (existing && existing.lider !== '-' ? existing.lider : '-');
       celulasMap.set(key, {
@@ -107,16 +115,19 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
         nome,
         lider: lider || '-',
         setor,
+        ativo: isAtivo,
       });
     }
 
-    return Array.from(celulasMap.values()).sort((a, b) => {
-      if (isTodosSetores) {
-        const cmpSetor = a.setor.localeCompare(b.setor);
-        if (cmpSetor !== 0) return cmpSetor;
-      }
-      return a.nome.localeCompare(b.nome);
-    });
+    return Array.from(celulasMap.values())
+      .filter((c) => c.ativo !== false)
+      .sort((a, b) => {
+        if (isTodosSetores) {
+          const cmpSetor = a.setor.localeCompare(b.setor);
+          if (cmpSetor !== 0) return cmpSetor;
+        }
+        return a.nome.localeCompare(b.nome);
+      });
   }, [lancamentos, setorSelecionado, isTodosSetores]);
 
   // 2. 5 semanas do mês baseadas no último sábado do mês
@@ -638,13 +649,18 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
                             </td>
                             {semanas.map((sem, sIdx) => {
                               const val = getValores(celula.nome, celula.setor, sem);
+                              const isValidado = val.validadoTesouraria;
+                              const bgClass = isValidado ? 'bg-white' : 'bg-[#EDABAB]';
                               return (
                                 <td
                                   key={`pix-${celula.id}-${sem.data}-${sIdx}`}
-                                  className="py-2 px-2.5 text-right font-mono text-xs border-r border-[#cbd2e0] last:border-r-0 bg-white"
+                                  className={`py-2 px-2.5 text-right font-mono text-xs border-r border-[#cbd2e0] last:border-r-0 ${bgClass}`}
                                 >
                                   {val.temDado && val.pix !== null && val.pix > 0 ? (
-                                    <span className="text-slate-900 font-semibold">{formatBRL(val.pix)}</span>
+                                    <span className="inline-flex items-center gap-1">
+                                      <span className="text-slate-900 font-semibold">{formatBRL(val.pix)}</span>
+                                      {isValidado && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 inline-block" />}
+                                    </span>
                                   ) : (
                                     <span className="text-slate-400 font-medium">R$ 0,00</span>
                                   )}
@@ -660,13 +676,18 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
                             </td>
                             {semanas.map((sem, sIdx) => {
                               const val = getValores(celula.nome, celula.setor, sem);
+                              const isValidado = val.validadoTesouraria;
+                              const bgClass = isValidado ? 'bg-white' : 'bg-[#EDABAB]';
                               return (
                                 <td
                                   key={`esp-${celula.id}-${sem.data}-${sIdx}`}
-                                  className="py-2 px-2.5 text-right font-mono text-xs border-r border-[#cbd2e0] last:border-r-0 bg-white"
+                                  className={`py-2 px-2.5 text-right font-mono text-xs border-r border-[#cbd2e0] last:border-r-0 ${bgClass}`}
                                 >
                                   {val.temDado && val.dinheiro !== null && val.dinheiro > 0 ? (
-                                    <span className="text-slate-900 font-semibold">{formatBRL(val.dinheiro)}</span>
+                                    <span className="inline-flex items-center gap-1">
+                                      <span className="text-slate-900 font-semibold">{formatBRL(val.dinheiro)}</span>
+                                      {isValidado && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 inline-block" />}
+                                    </span>
                                   ) : (
                                     <span className="text-slate-400 font-medium">R$ 0,00</span>
                                   )}

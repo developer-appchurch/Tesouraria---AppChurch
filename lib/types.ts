@@ -63,6 +63,7 @@ export interface LancamentoTesouraria {
   Criado?: string;
   Created?: string;
   observacoes?: string;
+  ativo?: boolean;
 }
 
 export type PerfilAcesso = 'admin' | 'tesoureiro_geral' | 'tesoureiro_congregacao' | 'auditor_fiscal' | 'visualizador';
