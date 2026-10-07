@@ -13,9 +13,12 @@ import {
 } from 'lucide-react';
 import { LancamentoTesouraria, UnidadeCadastrada } from '@/lib/types';
 import { formatBRL, formatDateBR } from '@/lib/utils';
-import { TreasuryService, MAPA_CELULAS_SETORES } from '@/lib/treasury-service';
+import { TreasuryService, MAPA_CELULAS_SETORES, registrarLimpezaDeCache } from '@/lib/treasury-service';
 
 let globalUnidadesCache: UnidadeCadastrada[] | null = null;
+registrarLimpezaDeCache(() => {
+  globalUnidadesCache = null;
+});
 
 interface RelacaoEnvelopesViewProps {
   lancamentos: LancamentoTesouraria[];
@@ -50,7 +53,8 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
     const carregar = async () => {
       try {
         const data = await TreasuryService.fetchUnidadesCadastradas();
-        if (!isCancelled && data && data.length > 0) {
+        // Sempre substitui (mesmo vazio): nunca manter unidades de outra sessão
+        if (!isCancelled && data) {
           globalUnidadesCache = data;
           setUnidadesCadastradas(data);
         }

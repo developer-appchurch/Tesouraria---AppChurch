@@ -152,7 +152,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     const carregar = async () => {
       try {
         const data = await TreasuryService.fetchUnidadesCadastradas();
-        if (!cancel && data && data.length > 0) {
+        if (!cancel && data) {
           setUnidadesCarregadas(data);
         }
       } catch (err) {

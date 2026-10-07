@@ -148,6 +148,8 @@ export default function TreasuryApp() {
     try {
       localStorage.setItem('tesouraria_usuario_logado', JSON.stringify(membro));
     } catch {}
+    setLancamentos([]);
+    setUnidadesCadastradas([]);
     setSessaoManual(membro);
     setIsLoggedOut(false);
     setCurrentView('validar-relatorios');
@@ -161,6 +163,9 @@ export default function TreasuryApp() {
 
   const handleLogout = async () => {
     await TreasuryService.logout();
+    // Zera os dados em tela: o próximo login (talvez de outra igreja) começa limpo
+    setLancamentos([]);
+    setUnidadesCadastradas([]);
     setSessaoManual(null);
     setIsLoggedOut(true);
     setCurrentView('login');

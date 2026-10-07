@@ -29,6 +29,14 @@ let memoryUnidades: UnidadeCadastrada[] | null = null;
 let lastUnidadesFetch = 0;
 const CACHE_TTL_MS = 3 * 60 * 1000; // 3 minutes cache (no polling)
 
+// Caches mantidos fora do serviço (ex.: telas) se registram aqui para serem
+// limpos junto com os do serviço no login/logout: dados de uma igreja nunca
+// podem aparecer para o próximo usuário do mesmo navegador.
+const limpadoresDeCache = new Set<() => void>();
+export function registrarLimpezaDeCache(limpar: () => void): void {
+  limpadoresDeCache.add(limpar);
+}
+
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function formatarDataBR(val: any): string {
@@ -361,6 +369,7 @@ export const TreasuryService = {
     lastLancamentosFetch = 0;
     lastPermissoesFetch = 0;
     lastUnidadesFetch = 0;
+    limpadoresDeCache.forEach((limpar) => limpar());
   },
 
   /**

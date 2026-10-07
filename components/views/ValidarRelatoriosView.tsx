@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 import { LancamentoTesouraria, MembroItem, PermissaoUsuario } from '@/lib/types';
 import { formatBRL, formatDateBR } from '@/lib/utils';
-import { TreasuryService, MAPA_CELULAS_SETORES } from '@/lib/treasury-service';
+import { TreasuryService, MAPA_CELULAS_SETORES, registrarLimpezaDeCache } from '@/lib/treasury-service';
 
 interface RelatorioDetalhadoRPC {
   id: string;
@@ -53,6 +53,9 @@ interface ValidarCache {
 }
 
 let globalValidarCache: ValidarCache | null = null;
+registrarLimpezaDeCache(() => {
+  globalValidarCache = null;
+});
 
 interface ValidarRelatoriosViewProps {
   lancamentos?: LancamentoTesouraria[];
