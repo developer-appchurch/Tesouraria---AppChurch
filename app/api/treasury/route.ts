@@ -19,8 +19,10 @@ import { converterItemParaLancamento, MAPA_CELULAS_SETORES } from '@/lib/treasur
 const SETORES_PADRAO = ['Safira', 'Fire', 'White', 'Black', 'Azul', 'Amarelo', 'Legacy', 'Onix', 'Diamante', 'Titanium'];
 const PAGE_SIZE = 1000;
 const MAX_ROWS = 20000;
-const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutos de cache em memória para unidades e membros
-const AUTH_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutos de cache para sessão e permissão
+const CACHE_TTL_MS = 5 * 60 * 1000; // unidades e membros por igreja
+const CACHE_MAX_IGREJAS = 200;
+const AUTH_CACHE_TTL_MS = 2 * 60 * 1000; // sessão e permissão: acesso removido deixa de valer em até 2 min
+const AUTH_CACHE_MAX = 5000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const COLUNAS_RELATORIO =
@@ -38,6 +40,41 @@ type Membro = { id: string; nome: string; igreja_id: string; podeGerenciarPermis
 
 /** Códigos do AppChurch (tabela permissoes) que liberam a gestão de acessos da tesouraria. */
 const CODIGOS_ADMIN = ['church:admin', 'permissions:manage'];
+
+/**
+ * Cache em memória com validade e tamanho máximo. Ao lotar, descarta só os
+ * itens mais antigos (antes o cache de sessão era zerado inteiro a cada 500
+ * usuários, o que com muitas igrejas deixava-o sempre vazio).
+ * Observação: é por instância do servidor; em várias instâncias cada uma tem o seu.
+ */
+class CacheLimitado<V> {
+  private itens = new Map<string, { valor: V; at: number }>();
+  constructor(private max: number, private ttlMs: number) {}
+
+  get(chave: string): V | undefined {
+    const item = this.itens.get(chave);
+    if (!item) return undefined;
+    if (Date.now() - item.at >= this.ttlMs) {
+      this.itens.delete(chave);
+      return undefined;
+    }
+    return item.valor;
+  }
+
+  set(chave: string, valor: V) {
+    this.itens.delete(chave);
+    this.itens.set(chave, { valor, at: Date.now() });
+    while (this.itens.size > this.max) {
+      this.itens.delete(this.itens.keys().next().value as string);
+    }
+  }
+
+  deleteWhere(teste: (valor: V) => boolean) {
+    this.itens.forEach((item, chave) => {
+      if (teste(item.valor)) this.itens.delete(chave);
+    });
+  }
+}
 
 class HttpError extends Error {
   constructor(public status: number, message: string) {
@@ -94,12 +131,10 @@ function getAdminClient(): SupabaseClient {
 // Autenticação + permissão de tesouraria
 // ---------------------------------------------------------------------------
 
-const authCache = new Map<string, { membro: Membro; at: number }>();
+const authCache = new CacheLimitado<Membro>(AUTH_CACHE_MAX, AUTH_CACHE_TTL_MS);
 
 function invalidarSessoesDoMembro(membroId: string) {
-  authCache.forEach((v, token) => {
-    if (v.membro.id === membroId) authCache.delete(token);
-  });
+  authCache.deleteWhere((m) => m.id === membroId);
 }
 
 async function autenticar(req: NextRequest, supabase: SupabaseClient): Promise<Membro> {
@@ -107,9 +142,8 @@ async function autenticar(req: NextRequest, supabase: SupabaseClient): Promise<M
   const token = header.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : '';
   if (!token) throw new HttpError(401, 'Sessão ausente. Faça login novamente.');
 
-  const now = Date.now();
   const cached = authCache.get(token);
-  if (cached && now - cached.at < AUTH_CACHE_TTL_MS) return cached.membro;
+  if (cached) return cached;
 
   const { data: userData, error: userErr } = await supabase.auth.getUser(token);
   if (userErr || !userData?.user) throw new HttpError(401, 'Sessão expirada. Faça login novamente.');
@@ -142,8 +176,7 @@ async function autenticar(req: NextRequest, supabase: SupabaseClient): Promise<M
     igreja_id: String(membro.igreja_id),
     podeGerenciarPermissoes: await temPermissaoAdmin(supabase, String(membro.id), membro.papel_id),
   };
-  if (authCache.size > 500) authCache.clear();
-  authCache.set(token, { membro: result, at: now });
+  authCache.set(token, result);
   return result;
 }
 
@@ -204,8 +237,8 @@ async function buscarTodos<T = any>(montarConsulta: () => any): Promise<T[]> {
   }
 }
 
-const unidadesCache = new Map<string, { map: Map<string, Unidade>; at: number }>();
-const membrosCache = new Map<string, { map: Map<string, string>; at: number }>();
+const unidadesCache = new CacheLimitado<Map<string, Unidade>>(CACHE_MAX_IGREJAS, CACHE_TTL_MS);
+const membrosCache = new CacheLimitado<Map<string, string>>(CACHE_MAX_IGREJAS, CACHE_TTL_MS);
 
 /**
  * Nomes dos líderes por unidade, SOMENTE da igreja informada.
@@ -251,8 +284,8 @@ async function carregarLideresPorUnidade(supabase: SupabaseClient, igrejaId: str
 }
 
 async function getUnidadesMap(supabase: SupabaseClient, igrejaId: string) {
-  const c = unidadesCache.get(igrejaId);
-  if (c && Date.now() - c.at < CACHE_TTL_MS) return c.map;
+  const emCache = unidadesCache.get(igrejaId);
+  if (emCache) return emCache;
   const [rows, lideresPorUnidade] = await Promise.all([
     buscarTodos<Unidade>(() =>
       supabase.from('unidades').select('id, nome, pai_id').eq('igreja_id', igrejaId).order('id')
@@ -272,19 +305,19 @@ async function getUnidadesMap(supabase: SupabaseClient, igrejaId: string) {
   map.forEach((u) => {
     if (u.pai_id && map.has(String(u.pai_id))) u.setor_nome = map.get(String(u.pai_id))?.nome;
   });
-  unidadesCache.set(igrejaId, { map, at: Date.now() });
+  unidadesCache.set(igrejaId, map);
   return map;
 }
 
 async function getMembrosMap(supabase: SupabaseClient, igrejaId: string) {
-  const c = membrosCache.get(igrejaId);
-  if (c && Date.now() - c.at < CACHE_TTL_MS) return c.map;
+  const emCache = membrosCache.get(igrejaId);
+  if (emCache) return emCache;
   const rows = await buscarTodos<{ id: string; nome: string }>(() =>
     supabase.from('membros').select('id, nome').eq('igreja_id', igrejaId).order('id')
   );
   const map = new Map<string, string>();
   rows.forEach((m) => map.set(String(m.id), String(m.nome)));
-  membrosCache.set(igrejaId, { map, at: Date.now() });
+  membrosCache.set(igrejaId, map);
   return map;
 }
 
