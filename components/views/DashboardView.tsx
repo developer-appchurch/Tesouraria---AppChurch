@@ -677,12 +677,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
         <div className="bg-[#24293f] p-3 sm:p-4 rounded-xl border border-[#323955] text-center flex flex-col justify-center">
           <p className="text-[11px] sm:text-xs text-slate-400 font-medium mb-1 truncate">
-            Relatórios Validados / Previstos
+            {baseValidadosMes > relatoriosPrevistos ? 'Relatórios Validados / Lançados' : 'Relatórios Validados / Previstos'}
           </p>
           <p className="text-xl sm:text-2xl lg:text-3xl font-black text-white tracking-tight flex items-center justify-center gap-1.5 font-mono">
             <span className="text-emerald-400">{totalValidadosMes}</span>
             <span className="text-slate-500 font-normal">/</span>
-            <span>{relatoriosPrevistos}</span>
+            {/* Mesma base do "Lançados x Recebidos": previstas ou entregues, o maior */}
+            <span>{baseValidadosMes}</span>
           </p>
         </div>
       </div>
