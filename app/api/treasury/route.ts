@@ -182,17 +182,26 @@ function exigirAdmin(membro: Membro) {
 // Utilitários de consulta
 // ---------------------------------------------------------------------------
 
-/** Busca todas as linhas de uma consulta, página por página (limite do Supabase: 1000 por vez). */
+/**
+ * Busca todas as linhas de uma consulta, página por página (limite do Supabase: 1000 por vez).
+ * Passando de MAX_ROWS, falha com erro claro em vez de devolver dados cortados
+ * (totais errados sem aviso são piores que um erro numa tesouraria).
+ */
 async function buscarTodos<T = any>(montarConsulta: () => any): Promise<T[]> {
   const out: T[] = [];
-  for (let from = 0; from < MAX_ROWS; from += PAGE_SIZE) {
+  for (let from = 0; ; from += PAGE_SIZE) {
     const { data, error } = await montarConsulta().range(from, from + PAGE_SIZE - 1);
     if (error) throw new HttpError(400, error.message);
     const rows = (data || []) as T[];
     out.push(...rows);
-    if (rows.length < PAGE_SIZE) break;
+    if (rows.length < PAGE_SIZE) return out;
+    if (out.length >= MAX_ROWS) {
+      throw new HttpError(
+        413,
+        `O período escolhido tem mais de ${MAX_ROWS.toLocaleString('pt-BR')} registros. Escolha um ano ou mês específico.`
+      );
+    }
   }
-  return out;
 }
 
 const unidadesCache = new Map<string, { map: Map<string, Unidade>; at: number }>();
