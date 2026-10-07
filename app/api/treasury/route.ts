@@ -26,7 +26,14 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const COLUNAS_RELATORIO =
   'id, unidade_id, lancado_por, data_relatorio, numero_semana, valor_pix, valor_especie, observacao, data_recebimento, tesoureiro_id, tesouraria_recebido, criado_em';
 
-type Unidade = { id: string; nome: string; pai_id?: string | null; setor_nome?: string };
+type Unidade = {
+  id: string;
+  nome: string;
+  pai_id?: string | null;
+  setor_nome?: string;
+  lideres?: string[];
+  lider_nome?: string | null;
+};
 type Membro = { id: string; nome: string; igreja_id: string };
 
 class HttpError extends Error {
@@ -149,11 +156,51 @@ const membrosCache = new Map<string, { map: Map<string, string>; at: number }>()
 async function getUnidadesMap(supabase: SupabaseClient, igrejaId: string) {
   const c = unidadesCache.get(igrejaId);
   if (c && Date.now() - c.at < CACHE_TTL_MS) return c.map;
-  const rows = await buscarTodos<Unidade>(() =>
-    supabase.from('unidades').select('id, nome, pai_id').eq('igreja_id', igrejaId).order('id')
-  );
+  const [rows, unidLideresRes, membrosRes] = await Promise.all([
+    buscarTodos<Unidade>(() =>
+      supabase.from('unidades').select('id, nome, pai_id').eq('igreja_id', igrejaId).order('id')
+    ),
+    supabase.from('unidade_lideres').select('unidade_id, pessoa_id, papel, ativo').eq('ativo', true),
+    supabase.from('membros').select('id, nome, unidade_id, funcao').eq('igreja_id', igrejaId),
+  ]);
+
+  const membrosMap = new Map<string, string>();
+  (membrosRes.data || []).forEach((m: any) => {
+    if (m.id && m.nome) membrosMap.set(String(m.id), String(m.nome).trim());
+  });
+
+  const lideresPorUnidade = new Map<string, string[]>();
+  (unidLideresRes.data || []).forEach((ul: any) => {
+    const nome = membrosMap.get(String(ul.pessoa_id));
+    if (nome) {
+      const uId = String(ul.unidade_id);
+      if (!lideresPorUnidade.has(uId)) lideresPorUnidade.set(uId, []);
+      if (!lideresPorUnidade.get(uId)!.includes(nome)) {
+        lideresPorUnidade.get(uId)!.push(nome);
+      }
+    }
+  });
+
+  (membrosRes.data || []).forEach((m: any) => {
+    if (m.unidade_id && m.funcao && String(m.funcao).toLowerCase().includes('lider') && m.nome) {
+      const uId = String(m.unidade_id);
+      const nome = String(m.nome).trim();
+      if (!lideresPorUnidade.has(uId)) lideresPorUnidade.set(uId, []);
+      if (!lideresPorUnidade.get(uId)!.includes(nome)) {
+        lideresPorUnidade.get(uId)!.push(nome);
+      }
+    }
+  });
+
   const map = new Map<string, Unidade>();
-  rows.forEach((u) => map.set(String(u.id), { ...u }));
+  rows.forEach((u) => {
+    const lids = lideresPorUnidade.get(String(u.id)) || [];
+    map.set(String(u.id), {
+      ...u,
+      lideres: lids,
+      lider_nome: lids.join(', ') || null,
+    });
+  });
   map.forEach((u) => {
     if (u.pai_id && map.has(String(u.pai_id))) u.setor_nome = map.get(String(u.pai_id))?.nome;
   });
@@ -335,14 +382,56 @@ export async function POST(req: NextRequest) {
 
       case 'listar_unidades': {
         const igrejaAlvo = params.igreja_id || igrejaId || 'ff600f5f-b91f-4826-bde2-3976e718877c';
-        const rows = await buscarTodos<any>(() =>
-          supabase
-            .from('unidades')
-            .select('id, nome, pai_id, ativo, nivel_tipo_id, igreja_id, dia_semana')
-            .eq('igreja_id', igrejaAlvo)
-            .order('nome', { ascending: true })
-        );
-        return NextResponse.json({ success: true, data: rows });
+        const [rows, unidLideresRes, membrosRes] = await Promise.all([
+          buscarTodos<any>(() =>
+            supabase
+              .from('unidades')
+              .select('id, nome, pai_id, ativo, nivel_tipo_id, igreja_id, dia_semana')
+              .eq('igreja_id', igrejaAlvo)
+              .order('nome', { ascending: true })
+          ),
+          supabase.from('unidade_lideres').select('unidade_id, pessoa_id, papel, ativo').eq('ativo', true),
+          supabase.from('membros').select('id, nome, unidade_id, funcao').eq('igreja_id', igrejaAlvo),
+        ]);
+
+        const membrosMap = new Map<string, string>();
+        (membrosRes.data || []).forEach((m: any) => {
+          if (m.id && m.nome) membrosMap.set(String(m.id), String(m.nome).trim());
+        });
+
+        const lideresPorUnidade = new Map<string, string[]>();
+        (unidLideresRes.data || []).forEach((ul: any) => {
+          const nome = membrosMap.get(String(ul.pessoa_id));
+          if (nome) {
+            const uId = String(ul.unidade_id);
+            if (!lideresPorUnidade.has(uId)) lideresPorUnidade.set(uId, []);
+            if (!lideresPorUnidade.get(uId)!.includes(nome)) {
+              lideresPorUnidade.get(uId)!.push(nome);
+            }
+          }
+        });
+
+        (membrosRes.data || []).forEach((m: any) => {
+          if (m.unidade_id && m.funcao && String(m.funcao).toLowerCase().includes('lider') && m.nome) {
+            const uId = String(m.unidade_id);
+            const nome = String(m.nome).trim();
+            if (!lideresPorUnidade.has(uId)) lideresPorUnidade.set(uId, []);
+            if (!lideresPorUnidade.get(uId)!.includes(nome)) {
+              lideresPorUnidade.get(uId)!.push(nome);
+            }
+          }
+        });
+
+        const data = rows.map((u: any) => {
+          const lids = lideresPorUnidade.get(String(u.id)) || [];
+          return {
+            ...u,
+            lideres: lids,
+            lider_nome: lids.join(', ') || null,
+          };
+        });
+
+        return NextResponse.json({ success: true, data });
       }
 
       case 'listar_permissoes': {

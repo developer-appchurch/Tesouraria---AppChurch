@@ -6,7 +6,7 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
-  title: 'ADM Tesouraria AppChurch - Gestão Financeira & Relatórios',
+  title: 'Tesouraria AppChurch - Gestão Financeira & Relatórios',
   // Favicons em public/ (gerados a partir da logo AppChurch Tesouraria)
   icons: {
     icon: [
@@ -23,13 +23,13 @@ export const metadata: Metadata = {
   },
   description: 'Sistema de gerenciamento da tesouraria com validação de relatórios semanais, conferência de envelopes, dashboards de arrecadação e gestão de permissões de acesso.',
   openGraph: {
-    title: 'ADM Tesouraria AppChurch - Gestão Financeira & Relatórios',
+    title: 'Tesouraria AppChurch - Gestão Financeira & Relatórios',
     description: 'Sistema de gerenciamento da tesouraria com validação de relatórios semanais, conferência de envelopes, dashboards de arrecadação e gestão de permissões de acesso.',
     type: 'website',
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'ADM Tesouraria AppChurch - Gestão Financeira & Relatórios',
+    title: 'Tesouraria AppChurch - Gestão Financeira & Relatórios',
     description: 'Sistema de gerenciamento da tesouraria com validação de relatórios semanais, conferência de envelopes, dashboards de arrecadação e gestão de permissões de acesso.',
   },
 };

@@ -163,4 +163,6 @@ export interface UnidadeCadastrada {
   nivel_tipo_id?: string | null;
   igreja_id?: string | null;
   dia_semana?: string | null;
+  lideres?: string[];
+  lider_nome?: string | null;
 }

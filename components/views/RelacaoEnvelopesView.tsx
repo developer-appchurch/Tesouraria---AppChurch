@@ -139,6 +139,8 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
       .map((u) => {
         const setorNome = (u.pai_id && mapaSetoresPorId.get(u.pai_id)) || setorUnit?.nome || setorSelecionado || 'Safira';
         const lider =
+          u.lider_nome ||
+          (u.lideres && u.lideres.length > 0 ? u.lideres.join(', ') : null) ||
           lideresPorUnidade.get(u.id) ||
           lideresPorNome.get(u.nome.trim().toLowerCase()) ||
           '-';
@@ -146,6 +148,7 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
           id: u.id,
           nome: u.nome,
           lider,
+          lideres: u.lideres || [],
           setor: setorNome,
           ativo: u.ativo,
         };
@@ -662,7 +665,10 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
                               className="py-2.5 px-3.5 font-bold text-xs text-slate-900 align-middle bg-[#f3f5f9] border-r border-[#b0b8cc]"
                             >
                               <div className="flex items-center gap-1.5 flex-wrap">
-                                <p className="font-bold text-slate-900 text-[13px] leading-tight truncate max-w-[200px]">
+                                <p
+                                  className="font-bold text-slate-900 text-[13px] leading-tight truncate max-w-[240px]"
+                                  title={celula.nome}
+                                >
                                   {celula.nome}
                                 </p>
                                 {isTodosSetores && celula.setor && (
@@ -671,8 +677,11 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
                                   </span>
                                 )}
                               </div>
-                              <p className="text-[11px] text-slate-500 font-normal mt-0.5 truncate max-w-[200px]">
-                                Líder: {celula.lider}
+                              <p
+                                className="text-[11px] text-slate-600 font-medium mt-0.5 truncate max-w-[240px]"
+                                title={`Líder${celula.lider && celula.lider.includes(',') ? 'es' : ''}: ${celula.lider}`}
+                              >
+                                Líder{celula.lider && celula.lider.includes(',') ? 'es' : ''}: {celula.lider}
                               </p>
                             </td>
                             <td className="py-2 px-2.5 text-center font-bold text-[11px] text-slate-800 border-r border-[#cbd2e0] bg-[#eaedf4]">
