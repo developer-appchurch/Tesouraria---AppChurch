@@ -22,6 +22,7 @@ const CACHE_TTL_MS = 5 * 60 * 1000; // unidades e membros por igreja
 const CACHE_MAX_IGREJAS = 200;
 const AUTH_CACHE_TTL_MS = 2 * 60 * 1000; // sessão e permissão: acesso removido deixa de valer em até 2 min
 const AUTH_CACHE_MAX = 5000;
+const LIMITE_REQ_POR_MINUTO = 120; // por usuário, por instância do servidor
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const COLUNAS_RELATORIO =
@@ -131,6 +132,23 @@ function getAdminClient(): SupabaseClient {
 // ---------------------------------------------------------------------------
 
 const authCache = new CacheLimitado<Membro>(AUTH_CACHE_MAX, AUTH_CACHE_TTL_MS);
+
+// Limite simples de requisições por usuário (protege o banco de loops e abusos).
+// Em várias instâncias o limite vale por instância; para limite global, usar Redis/Upstash.
+const contadorRequisicoes = new CacheLimitado<{ inicio: number; qtd: number }>(AUTH_CACHE_MAX, 60 * 1000);
+
+function verificarLimite(membroId: string) {
+  const agora = Date.now();
+  const atual = contadorRequisicoes.get(membroId);
+  if (!atual || agora - atual.inicio >= 60 * 1000) {
+    contadorRequisicoes.set(membroId, { inicio: agora, qtd: 1 });
+    return;
+  }
+  atual.qtd++;
+  if (atual.qtd > LIMITE_REQ_POR_MINUTO) {
+    throw new HttpError(429, 'Muitas requisições em pouco tempo. Aguarde um minuto e tente novamente.');
+  }
+}
 
 function invalidarSessoesDoMembro(membroId: string) {
   authCache.deleteWhere((m) => m.id === membroId);
@@ -471,6 +489,7 @@ export async function POST(req: NextRequest) {
     const { action, params = {} } = body || {};
     const supabase = getAdminClient();
     const membro = await autenticar(req, supabase);
+    verificarLimite(membro.id);
     const igrejaId = membro.igreja_id;
 
     switch (action) {
@@ -592,7 +611,8 @@ export async function POST(req: NextRequest) {
           .limit(40);
 
         if (busca) {
-          q = q.ilike('nome', `%${busca}%`);
+          // Escapa curingas do LIKE: "%" e "_" digitados são buscados literalmente
+          q = q.ilike('nome', `%${busca.replace(/[\\%_]/g, (c) => `\\${c}`)}%`);
         }
 
         const { data, error } = await q;
