@@ -61,6 +61,8 @@ interface ValidarRelatoriosViewProps {
   lancamentos?: LancamentoTesouraria[];
   anoSelecionado: number | string;
   onSelectAno?: (ano: number | string) => void;
+  /** Anos com relatórios na igreja (do primeiro até o atual), vindos do servidor */
+  anosBase?: number[];
   onRefresh?: () => void;
   isRefreshing?: boolean;
   onShowToast: (msg: string) => void;
@@ -97,6 +99,7 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
   onShowToast,
   usuarioLogado,
   ativa = true,
+  anosBase = [],
   onPendentesChange,
 }) => {
   // Aba principal de status: 'pendentes' (P/ Validar) vs 'confirmados'
@@ -146,6 +149,7 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
   // Mostra apenas anos referentes aos relatórios existentes no banco
   const anosDisponiveis = useMemo(() => {
     const anosSet = new Set<number>();
+    anosBase.forEach((a) => anosSet.add(a));
 
     if (lancamentos && lancamentos.length > 0) {
       lancamentos.forEach((l) => {
@@ -185,7 +189,7 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
       anosSet.add(new Date().getFullYear());
     }
     return Array.from(anosSet).sort((a, b) => b - a);
-  }, [lancamentos, relatorios]);
+  }, [lancamentos, relatorios, anosBase]);
 
   // Se for o ano atual, exibe apenas até o mês mais recente que estamos
   const mesesDisponiveis = useMemo(() => {

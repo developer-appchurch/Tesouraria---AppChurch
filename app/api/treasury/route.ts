@@ -476,9 +476,25 @@ export async function POST(req: NextRequest) {
     switch (action) {
       // Dados da sessão para a interface (ex.: mostrar ou não a tela de Permissões)
       case 'minha_sessao': {
+        // Primeiro ano com relatórios (usa o índice igreja_id + data_relatorio)
+        const { data: primeiro } = await supabase
+          .from('relatorios_semanais')
+          .select('data_relatorio')
+          .eq('igreja_id', igrejaId)
+          .not('data_relatorio', 'is', null)
+          .order('data_relatorio', { ascending: true })
+          .limit(1)
+          .maybeSingle();
+        const primeiroAno = primeiro?.data_relatorio ? Number(String(primeiro.data_relatorio).slice(0, 4)) : null;
         return NextResponse.json({
           success: true,
-          data: { id: membro.id, nome: membro.nome, igreja_id: igrejaId, podeGerenciarPermissoes: membro.podeGerenciarPermissoes },
+          data: {
+            id: membro.id,
+            nome: membro.nome,
+            igreja_id: igrejaId,
+            podeGerenciarPermissoes: membro.podeGerenciarPermissoes,
+            primeiroAno,
+          },
         });
       }
 

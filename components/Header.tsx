@@ -8,6 +8,8 @@ interface HeaderProps {
   currentView: ViewMode;
   anoSelecionado: number | string;
   onSelectAno: (ano: number | string) => void;
+  /** Anos com relatórios na igreja (do primeiro até o atual), vindos do servidor */
+  anosBase?: number[];
   lancamentos?: LancamentoTesouraria[];
   onRefresh: () => void;
   isRefreshing: boolean;
@@ -49,10 +51,12 @@ export const Header: React.FC<HeaderProps> = ({
   setorSelecionado,
   onSelectSetor,
   setoresDisponiveis = [],
+  anosBase = [],
   onShowToast,
 }) => {
   const anosDisponiveis = useMemo(() => {
     const anosSet = new Set<number>();
+    anosBase.forEach((a) => anosSet.add(a));
     lancamentos.forEach((l) => {
       let a = l.ano;
       if (!a && l.dataBR) {
@@ -74,7 +78,7 @@ export const Header: React.FC<HeaderProps> = ({
       anosSet.add(new Date().getFullYear());
     }
     return Array.from(anosSet).sort((a, b) => b - a);
-  }, [lancamentos]);
+  }, [lancamentos, anosBase]);
 
   // Se for o ano atual, exibe apenas até o mês mais recente (mês atual)
   const mesesDisponiveis = useMemo(() => {

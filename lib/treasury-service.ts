@@ -481,10 +481,14 @@ export const TreasuryService = {
   /**
    * Permissões da sessão atual, decididas pelo servidor (ex.: se pode gerenciar acessos).
    */
-  async fetchMinhaSessao(): Promise<{ podeGerenciarPermissoes: boolean } | null> {
-    const res = await callTreasuryApi<{ podeGerenciarPermissoes: boolean }>('minha_sessao');
+  async fetchMinhaSessao(): Promise<{ podeGerenciarPermissoes: boolean; primeiroAno: number | null } | null> {
+    const res = await callTreasuryApi<{ podeGerenciarPermissoes: boolean; primeiroAno: number | null }>('minha_sessao');
     if (!res.success || !res.data) return null;
-    return { podeGerenciarPermissoes: res.data.podeGerenciarPermissoes === true };
+    const primeiroAno = Number(res.data.primeiroAno);
+    return {
+      podeGerenciarPermissoes: res.data.podeGerenciarPermissoes === true,
+      primeiroAno: Number.isFinite(primeiroAno) && primeiroAno > 2000 ? primeiroAno : null,
+    };
   },
 
   /**
@@ -532,54 +536,6 @@ export const TreasuryService = {
       return { success: true, data: apiRes.data };
     }
     return { success: false, error: apiRes.error, isAuthError: apiRes.authError };
-  },
-
-  /**
-   * Pendências por setor no período (via /api/treasury)
-   */
-  async rpcTesourariaSetoresPendencias(
-    ano: number | string,
-    mes?: number | string | null
-  ): Promise<{
-    success: boolean;
-    data: { setor_id: string; setor_nome: string; qtd_pendentes: number }[];
-    error?: string;
-    isAuthError?: boolean;
-  }> {
-    const apiRes = await callTreasuryApi<any[]>('setores_pendencias', { ano, mes });
-    if (apiRes.success && Array.isArray(apiRes.data)) return { success: true, data: apiRes.data };
-    return { success: false, data: [], error: apiRes.error, isAuthError: apiRes.authError };
-  },
-
-  /**
-   * Relatórios detalhados do período (via /api/treasury)
-   */
-  async rpcTesourariaRelatoriosDetalhados(
-    ano: number | string,
-    mes?: number | string | null,
-    setorId?: string | null,
-    somentePendentes?: boolean | null
-  ): Promise<{ success: boolean; data: any[]; error?: string; isAuthError?: boolean }> {
-    const apiRes = await callTreasuryApi<any[]>('relatorios_detalhados', { ano, mes, setorId, somentePendentes });
-    if (apiRes.success && Array.isArray(apiRes.data)) return { success: true, data: apiRes.data };
-    return { success: false, data: [], error: apiRes.error, isAuthError: apiRes.authError };
-  },
-
-  /**
-   * Contadores do topo da tela: { pendentes, confirmados } (via /api/treasury)
-   */
-  async rpcTesourariaResumo(
-    ano: number | string,
-    mes?: number | string | null
-  ): Promise<{
-    success: boolean;
-    data: { pendentes: number; confirmados: number };
-    error?: string;
-    isAuthError?: boolean;
-  }> {
-    const apiRes = await callTreasuryApi<{ pendentes: number; confirmados: number }>('resumo', { ano, mes });
-    if (apiRes.success && apiRes.data) return { success: true, data: apiRes.data };
-    return { success: false, data: { pendentes: 0, confirmados: 0 }, error: apiRes.error, isAuthError: apiRes.authError };
   },
 
   /**

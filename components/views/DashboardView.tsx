@@ -10,6 +10,8 @@ interface DashboardViewProps {
   lancamentos: LancamentoTesouraria[];
   anoSelecionado: number | string;
   onSelectAno: (ano: number | string) => void;
+  /** Anos com relatórios na igreja (do primeiro até o atual), vindos do servidor */
+  anosBase?: number[];
   onRefresh: () => void;
   onToggleMobileMenu?: () => void;
   isRefreshing?: boolean;
@@ -144,6 +146,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   isRefreshing = false,
   unidades,
   usuarioLogado,
+  anosBase = [],
 }) => {
   const [unidadesCarregadas, setUnidadesCarregadas] = useState<UnidadeCadastrada[]>([]);
 
@@ -191,6 +194,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const anosDisponiveis = useMemo(() => {
     const anosSet = new Set<number>();
     const anoAtualReal = new Date().getFullYear();
+    anosBase.forEach((a) => anosSet.add(a));
     anosSet.add(anoAtualReal);
     lancamentos.forEach((l) => {
       if (l.ano && typeof l.ano === 'number' && l.ano > 2000) {
@@ -198,7 +202,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       }
     });
     return Array.from(anosSet).sort((a, b) => b - a);
-  }, [lancamentos]);
+  }, [lancamentos, anosBase]);
 
   // Meses disponíveis
   const mesesDisponiveis = useMemo(() => {

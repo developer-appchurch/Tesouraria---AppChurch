@@ -47,15 +47,25 @@ export default function TreasuryApp() {
   // Decidido pelo servidor (papel church:admin / permissions:manage do AppChurch)
   const [podeGerenciarPermissoes, setPodeGerenciarPermissoes] = useState<boolean>(false);
 
+  // Anos com relatórios (do primeiro até o atual), para os seletores de ano de todas as telas
+  const [primeiroAno, setPrimeiroAno] = useState<number | null>(null);
+  const anosComRelatorios = useMemo(() => {
+    const atual = new Date().getFullYear();
+    const inicio = Math.min(primeiroAno ?? atual, atual);
+    return Array.from({ length: atual - inicio + 1 }, (_, i) => atual - i);
+  }, [primeiroAno]);
+
   const carregarSessao = useCallback(async () => {
     const sessao = await TreasuryService.fetchMinhaSessao();
     setPodeGerenciarPermissoes(sessao?.podeGerenciarPermissoes === true);
+    setPrimeiroAno(sessao?.primeiroAno ?? null);
   }, []);
 
   // Filter states per view
-  const [anoDashboard, setAnoDashboard] = useState<number | string>(2026);
-  const [anoValidar, setAnoValidar] = useState<number | string>(2026);
-  const [anoEnvelopes, setAnoEnvelopes] = useState<number | string>(2026);
+  // Padrão: ano corrente (não fixo no código)
+  const [anoDashboard, setAnoDashboard] = useState<number | string>(() => new Date().getFullYear());
+  const [anoValidar, setAnoValidar] = useState<number | string>(() => new Date().getFullYear());
+  const [anoEnvelopes, setAnoEnvelopes] = useState<number | string>(() => new Date().getFullYear());
   const [mesEnvelopes, setMesEnvelopes] = useState<string>(() => String(new Date().getMonth() + 1));
   const [setorEnvelopes, setSetorEnvelopes] = useState<string>('');
 
@@ -191,6 +201,7 @@ export default function TreasuryApp() {
     setLancamentos([]);
     setUnidadesCadastradas([]);
     setPodeGerenciarPermissoes(false);
+    setPrimeiroAno(null);
     setPendingCount(0);
     setSessaoManual(null);
     setIsLoggedOut(true);
@@ -278,6 +289,7 @@ export default function TreasuryApp() {
             setorSelecionado={setorEnvelopes}
             onSelectSetor={setSetorEnvelopes}
             setoresDisponiveis={setoresDisponiveis}
+            anosBase={anosComRelatorios}
             onShowToast={showToast}
           />
         )}
@@ -303,6 +315,7 @@ export default function TreasuryApp() {
               usuarioLogado={usuarioLogado}
               usuarios={usuarios}
               ativa={viewEfetiva === 'validar-relatorios'}
+              anosBase={anosComRelatorios}
               onPendentesChange={setPendingCount}
             />
           </div>
@@ -331,6 +344,7 @@ export default function TreasuryApp() {
               onToggleMobileMenu={() => setIsMobileNavOpen((prev) => !prev)}
               onShowToast={showToast}
               unidades={unidadesCadastradas}
+              anosBase={anosComRelatorios}
               usuarioLogado={usuarioLogado}
             />
           </div>
