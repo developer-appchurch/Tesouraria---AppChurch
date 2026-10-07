@@ -119,9 +119,9 @@ export default function TreasuryApp() {
     [periodoDados, showToast]
   );
 
-  // Validar Relatórios busca seus próprios dados (painel_validacao): a lista
-  // completa de lançamentos só é necessária no Dashboard e na Relação de Envelopes.
-  const precisaLancamentos = currentView === 'dashboard' || currentView === 'relacao-envelopes';
+  // Validar Relatórios (painel_validacao) e Dashboard (dashboard_resumo) buscam seus
+  // próprios dados: a lista completa de lançamentos só é usada na Relação de Envelopes.
+  const precisaLancamentos = currentView === 'relacao-envelopes';
   const estaLogado = Boolean(usuarioLogado);
 
   // Sessão salva: restaura o usuário, permissões e unidades UMA vez ao abrir o app
@@ -336,7 +336,7 @@ export default function TreasuryApp() {
 
           <div className={viewEfetiva === 'dashboard' ? 'block min-h-full' : 'hidden'}>
             <DashboardView
-              lancamentos={lancamentos}
+              ativa={viewEfetiva === 'dashboard'}
               anoSelecionado={anoDashboard}
               onSelectAno={setAnoDashboard}
               onRefresh={handleRefresh}

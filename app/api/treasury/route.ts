@@ -474,6 +474,66 @@ function resumir(lista: any[], setoresBase: string[]) {
   };
 }
 
+type AgregadoDashboard = {
+  ano: number;
+  mes: number;
+  setor: string;
+  enviados: number;
+  validados: number;
+  pix_validado: number;
+  especie_validado: number;
+};
+
+// Função SQL opcional (supabase/migrations/..._tesouraria_dashboard_resumo.sql).
+// Se não estiver instalada, guarda isso por 10 min e soma no próprio servidor.
+let rpcDashboardIndisponivelAte = 0;
+
+async function resumoDashboard(supabase: SupabaseClient, igrejaId: string, ano: any): Promise<AgregadoDashboard[]> {
+  const { todosAnos, pAno } = resolverPeriodo(ano, null);
+  const anoParam = todosAnos ? null : pAno;
+
+  if (Date.now() >= rpcDashboardIndisponivelAte) {
+    const { data, error } = await supabase.rpc('tesouraria_dashboard_resumo', { p_igreja_id: igrejaId, p_ano: anoParam });
+    if (!error) {
+      return (data || []).map((r: any) => ({
+        ano: Number(r.ano),
+        mes: Number(r.mes),
+        setor: String(r.setor || SEM_SETOR),
+        enviados: Number(r.enviados) || 0,
+        validados: Number(r.validados) || 0,
+        pix_validado: Number(r.pix_validado) || 0,
+        especie_validado: Number(r.especie_validado) || 0,
+      }));
+    }
+    const funcaoAusente = error.code === 'PGRST202' || error.code === '42883';
+    if (!funcaoAusente) throw new HttpError(400, error.message);
+    rpcDashboardIndisponivelAte = Date.now() + 10 * 60 * 1000;
+  }
+
+  // Alternativa sem a função SQL: mesmos totais calculados aqui (em centavos)
+  const relatorios = await carregarRelatorios(supabase, igrejaId, { ano: anoParam ?? 'todos' });
+  const grupos = new Map<string, AgregadoDashboard & { pixCent: number; espCent: number }>();
+  relatorios.forEach((r) => {
+    const chave = `${r.ano}|${r.mes}|${r.setor}`;
+    const g = grupos.get(chave) || {
+      ano: r.ano, mes: r.mes, setor: r.setor, enviados: 0, validados: 0,
+      pix_validado: 0, especie_validado: 0, pixCent: 0, espCent: 0,
+    };
+    g.enviados++;
+    if (r.tesouraria_recebido) {
+      g.validados++;
+      g.pixCent += Math.round(r.valor_pix * 100);
+      g.espCent += Math.round(r.valor_especie * 100);
+    }
+    grupos.set(chave, g);
+  });
+  return Array.from(grupos.values()).map(({ pixCent, espCent, ...g }) => ({
+    ...g,
+    pix_validado: pixCent / 100,
+    especie_validado: espCent / 100,
+  }));
+}
+
 function validarId(id: any): string {
   const s = String(id || '').trim();
   if (!UUID_RE.test(s)) throw new HttpError(400, 'Identificador de relatório inválido.');
@@ -526,6 +586,12 @@ export async function POST(req: NextRequest) {
         ]);
         const { resumo, setores } = resumir(relatorios, setoresDaIgreja(unidades));
         return NextResponse.json({ success: true, data: { resumo, setores, relatorios } });
+      }
+
+      // Totais por (ano, mês, setor) para o Dashboard: ~100 linhas por ano em vez de milhares
+      case 'dashboard_resumo': {
+        const data = await resumoDashboard(supabase, igrejaId, params.ano);
+        return NextResponse.json({ success: true, data });
       }
 
       case 'listar_unidades': {

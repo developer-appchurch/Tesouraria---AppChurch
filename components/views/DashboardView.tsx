@@ -2,12 +2,13 @@
 
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { RotateCw, ShieldCheck, Menu, TrendingUp } from 'lucide-react';
-import { LancamentoTesouraria, UnidadeCadastrada, MembroItem } from '@/lib/types';
+import { AgregadoDashboard, UnidadeCadastrada, MembroItem } from '@/lib/types';
 import { TreasuryService, SEM_SETOR } from '@/lib/treasury-service';
 import { formatBRL, somarReais } from '@/lib/utils';
 
 interface DashboardViewProps {
-  lancamentos: LancamentoTesouraria[];
+  /** false quando a tela está escondida: não busca dados no servidor */
+  ativa?: boolean;
   anoSelecionado: number | string;
   onSelectAno: (ano: number | string) => void;
   /** Anos com relatórios na igreja (do primeiro até o atual), vindos do servidor */
@@ -138,7 +139,7 @@ function calcularEncontrosPrevistosMes(
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
-  lancamentos,
+  ativa = true,
   anoSelecionado,
   onSelectAno,
   onRefresh,
@@ -149,6 +150,28 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   anosBase = [],
 }) => {
   const [unidadesCarregadas, setUnidadesCarregadas] = useState<UnidadeCadastrada[]>([]);
+
+  // Totais por (ano, mês, setor) já somados no servidor (~100 linhas/ano em vez de milhares)
+  const [agregados, setAgregados] = useState<AgregadoDashboard[]>([]);
+  const [erroAgregados, setErroAgregados] = useState<string | null>(null);
+  const anoConsulta: number | string =
+    String(anoSelecionado).toLowerCase().startsWith('todos') || Number(anoSelecionado) === 0
+      ? 'todos'
+      : Number(anoSelecionado) || new Date().getFullYear();
+
+  useEffect(() => {
+    if (!ativa) return;
+    let cancel = false;
+    (async () => {
+      const res = await TreasuryService.fetchDashboardResumo(anoConsulta, isRefreshing);
+      if (cancel) return;
+      setErroAgregados(res.error || null);
+      if (!res.error) setAgregados(res.data);
+    })();
+    return () => {
+      cancel = true;
+    };
+  }, [ativa, anoConsulta, isRefreshing]);
 
   useEffect(() => {
     let cancel = false;
@@ -196,13 +219,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     const anoAtualReal = new Date().getFullYear();
     anosBase.forEach((a) => anosSet.add(a));
     anosSet.add(anoAtualReal);
-    lancamentos.forEach((l) => {
-      if (l.ano && typeof l.ano === 'number' && l.ano > 2000) {
-        anosSet.add(l.ano);
-      }
+    agregados.forEach((a) => {
+      if (a.ano > 2000) anosSet.add(a.ano);
     });
     return Array.from(anosSet).sort((a, b) => b - a);
-  }, [lancamentos, anosBase]);
+  }, [agregados, anosBase]);
 
   // Meses disponíveis
   const mesesDisponiveis = useMemo(() => {
@@ -222,37 +243,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     return idx !== -1 ? idx + 1 : 0;
   }, [mesSelecionado, isTodosMeses]);
 
-  // Apenas relatórios validados (TESOURARIA_RECEB === true)
-  const lancamentosValidados = useMemo(() => {
-    return lancamentos.filter((l) => l.TESOURARIA_RECEB === true);
-  }, [lancamentos]);
-
-  // Lançamentos validados do mês e ano selecionados
-  const lancamentosMesAtual = useMemo(() => {
-    return lancamentosValidados.filter((l) => {
-      const matchAno = isTodosAnos || Number(l.ano) === Number(anoSelecionado);
-      const matchMes = isTodosMeses || Number(l.mes) === Number(numMesSelecionado);
+  // Totais do mês e ano selecionados
+  const agregadosPeriodo = useMemo(() => {
+    return agregados.filter((a) => {
+      const matchAno = isTodosAnos || a.ano === Number(anoSelecionado);
+      const matchMes = isTodosMeses || a.mes === Number(numMesSelecionado);
       return matchAno && matchMes;
     });
-  }, [lancamentosValidados, isTodosAnos, anoSelecionado, isTodosMeses, numMesSelecionado]);
+  }, [agregados, isTodosAnos, anoSelecionado, isTodosMeses, numMesSelecionado]);
 
-  // Todos os lançamentos do mês e ano
-  const lancamentosTodosMesAtual = useMemo(() => {
-    return lancamentos.filter((l) => {
-      const matchAno = isTodosAnos || Number(l.ano) === Number(anoSelecionado);
-      const matchMes = isTodosMeses || Number(l.mes) === Number(numMesSelecionado);
-      return matchAno && matchMes;
-    });
-  }, [lancamentos, isTodosAnos, anoSelecionado, isTodosMeses, numMesSelecionado]);
-
-  // Totais KPIs
-  const totalMesPix = useMemo(() => {
-    return somarReais(lancamentosMesAtual, (curr) => curr.valorPix ?? curr.ValorOferta ?? 0);
-  }, [lancamentosMesAtual]);
-
-  const totalMesEspecie = useMemo(() => {
-    return somarReais(lancamentosMesAtual, (curr) => curr.valorEspecie ?? curr.OfertaEspecie ?? 0);
-  }, [lancamentosMesAtual]);
+  // Totais KPIs (somente relatórios validados)
+  const totalMesPix = useMemo(() => somarReais(agregadosPeriodo, (a) => a.pix_validado), [agregadosPeriodo]);
+  const totalMesEspecie = useMemo(() => somarReais(agregadosPeriodo, (a) => a.especie_validado), [agregadosPeriodo]);
 
   const totalMesGeral = Math.round((totalMesPix + totalMesEspecie) * 100) / 100;
 
@@ -357,20 +359,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     if (isModoAnosNoGrafico) {
       const anosOrdenados = [...anosDisponiveis].sort((a, b) => a - b);
       return anosOrdenados.map((anoItem) => {
-        const doAnoEMesTodos = lancamentos.filter(
-          (l) => Number(l.ano) === anoItem && Number(l.mes) === Number(numMesSelecionado)
-        );
-        const doAnoEMesValidados = doAnoEMesTodos.filter((l) => l.TESOURARIA_RECEB === true);
+        const doAnoEMes = agregados.filter((a) => a.ano === anoItem && a.mes === Number(numMesSelecionado));
 
-        const esp = somarReais(doAnoEMesValidados, (curr) => curr.valorEspecie ?? curr.OfertaEspecie ?? 0);
-        const pix = somarReais(doAnoEMesValidados, (curr) => curr.valorPix ?? curr.ValorOferta ?? 0);
+        const esp = somarReais(doAnoEMes, (a) => a.especie_validado);
+        const pix = somarReais(doAnoEMes, (a) => a.pix_validado);
         const previstos =
           unidadesMaisBaixas.length > 0
             ? calcularEncontrosPrevistosMes(anoItem, Number(numMesSelecionado) || 1, unidadesMaisBaixas)
             : celulasAtivas * 4;
 
-        const totalRelatorios = doAnoEMesTodos.length;
-        const validados = doAnoEMesValidados.length;
+        const totalRelatorios = doAnoEMes.reduce((acc, a) => acc + a.enviados, 0);
+        const validados = doAnoEMes.reduce((acc, a) => acc + a.validados, 0);
         // Porcentagem calculada em relação ao total de relatórios e o total validado dentro do período
         const perc = totalRelatorios > 0 ? Math.min(100, Math.round((validados / totalRelatorios) * 100)) : 0;
 
@@ -390,14 +389,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
     return NOMES_MESES_ABREV.map((nomeAbrev, idx) => {
       const mesNum = idx + 1;
-      const doMesTodos = lancamentos.filter((l) => {
-        const matchAno = isTodosAnos || Number(l.ano) === Number(anoSelecionado);
-        return matchAno && Number(l.mes) === mesNum;
-      });
-      const doMesValidados = doMesTodos.filter((l) => l.TESOURARIA_RECEB === true);
+      const doMes = agregados.filter((a) => (isTodosAnos || a.ano === Number(anoSelecionado)) && a.mes === mesNum);
 
-      const esp = somarReais(doMesValidados, (curr) => curr.valorEspecie ?? curr.OfertaEspecie ?? 0);
-      const pix = somarReais(doMesValidados, (curr) => curr.valorPix ?? curr.ValorOferta ?? 0);
+      const esp = somarReais(doMes, (a) => a.especie_validado);
+      const pix = somarReais(doMes, (a) => a.pix_validado);
 
       let previstos = 0;
       if (unidadesMaisBaixas.length > 0) {
@@ -414,8 +409,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         previstos = celulasAtivas * 4 * multAnos;
       }
 
-      const totalRelatorios = doMesTodos.length;
-      const validados = doMesValidados.length;
+      const totalRelatorios = doMes.reduce((acc, a) => acc + a.enviados, 0);
+      const validados = doMes.reduce((acc, a) => acc + a.validados, 0);
       // Porcentagem calculada em relação ao total de relatórios e o total validado dentro do período
       const perc = totalRelatorios > 0 ? Math.min(100, Math.round((validados / totalRelatorios) * 100)) : 0;
 
@@ -434,7 +429,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   }, [
     isModoAnosNoGrafico,
     anosDisponiveis,
-    lancamentos,
+    agregados,
     numMesSelecionado,
     unidadesMaisBaixas,
     celulasAtivas,
@@ -570,30 +565,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       mapaSetoresPorId.set(u.id, u.nome);
     });
 
-    // Mapeamento de célula (id e nome) para o nome do setor
-    const mapaUnidadeParaSetor = new Map<string, string>();
-    unidadesCadastradas.forEach((u) => {
-      if (u.pai_id) {
-        const nomeSetor = (mapaSetoresPorId.get(u.pai_id) || '').trim();
-        if (nomeSetor) {
-          mapaUnidadeParaSetor.set(u.id.toLowerCase(), nomeSetor);
-          mapaUnidadeParaSetor.set(u.nome.trim().toLowerCase(), nomeSetor);
-        }
-      }
-    });
-
-    const resolverSetorLancamento = (l: LancamentoTesouraria): string => {
-      if (l.unidade_id && mapaUnidadeParaSetor.has(String(l.unidade_id).toLowerCase())) {
-        return mapaUnidadeParaSetor.get(String(l.unidade_id).toLowerCase())!;
-      }
-      const celula = (l.Célula || l.celulaNome || '').trim().toLowerCase();
-      if (celula && mapaUnidadeParaSetor.has(celula)) {
-        return mapaUnidadeParaSetor.get(celula)!;
-      }
-      const setor = (l.Setor || l.setor || '').trim();
-      return setor || SEM_SETOR;
-    };
-
     // Todos os setores a partir das unidades de menor nível ativas da igreja
     const todosSetores = new Set<string>();
     unidadesMaisBaixas.forEach((u) => {
@@ -605,23 +576,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
     // Sem unidades cadastradas: usa os setores que aparecem nos próprios relatórios
     if (todosSetores.size === 0) {
-      lancamentos.forEach((l) => todosSetores.add(resolverSetorLancamento(l)));
+      agregados.forEach((a) => todosSetores.add(a.setor));
     }
 
     // Contagem de relatórios enviados e validados por setor no período filtrado
     const enviadosPorSetor = new Map<string, number>();
     const validadosPorSetor = new Map<string, number>();
 
-    lancamentos.forEach((l) => {
-      const matchAno = isTodosAnos || Number(l.ano) === Number(anoSelecionado);
-      const matchMes = isTodosMeses || Number(l.mes) === Number(numMesSelecionado);
-      if (matchAno && matchMes) {
-        const setor = resolverSetorLancamento(l);
-        enviadosPorSetor.set(setor, (enviadosPorSetor.get(setor) || 0) + 1);
-        if (l.TESOURARIA_RECEB === true) {
-          validadosPorSetor.set(setor, (validadosPorSetor.get(setor) || 0) + 1);
-        }
-      }
+    // O setor de cada linha já vem resolvido pelo servidor (unidade pai da célula)
+    agregadosPeriodo.forEach((a) => {
+      enviadosPorSetor.set(a.setor, (enviadosPorSetor.get(a.setor) || 0) + a.enviados);
+      validadosPorSetor.set(a.setor, (validadosPorSetor.get(a.setor) || 0) + a.validados);
     });
 
     const lista = Array.from(todosSetores).map((nome) => {
@@ -648,15 +613,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   }, [
     unidadesCadastradas,
     unidadesMaisBaixas,
-    lancamentos,
-    isTodosAnos,
-    anoSelecionado,
-    isTodosMeses,
-    numMesSelecionado,
+    agregados,
+    agregadosPeriodo,
   ]);
 
-  const totalLancadosMes = lancamentosTodosMesAtual.length;
-  const totalValidadosMes = lancamentosMesAtual.length;
+  const totalLancadosMes = agregadosPeriodo.reduce((acc, a) => acc + a.enviados, 0);
+  const totalValidadosMes = agregadosPeriodo.reduce((acc, a) => acc + a.validados, 0);
   const percPrevistosMes =
     relatoriosPrevistos > 0 ? Math.min(100, Math.round((totalLancadosMes / relatoriosPrevistos) * 100)) : 0;
   const percValidadosMes =
@@ -667,6 +629,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   return (
     <div className="p-3.5 sm:p-6 space-y-4 sm:space-y-6 max-w-[1600px] mx-auto text-slate-100">
+      {erroAgregados && (
+        <div className="bg-rose-500/10 border border-rose-500/40 text-rose-300 text-xs rounded-lg px-3 py-2">
+          Não foi possível carregar os totais: {erroAgregados}
+        </div>
+      )}
+
       {/* Top Header */}
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#2d334d] pb-4">
         <div className="flex items-center gap-2.5">

@@ -1,5 +1,5 @@
 import { getSupabaseClient } from './supabase';
-import { LancamentoTesouraria, AppChurchUser, MembroItem, UnidadeCadastrada, TesourariaPermissaoItem, MembroBuscaItem } from './types';
+import { LancamentoTesouraria, AgregadoDashboard, AppChurchUser, MembroItem, UnidadeCadastrada, TesourariaPermissaoItem, MembroBuscaItem } from './types';
 
 // In-memory cache for high performance and reduced query consumption
 let memoryLancamentos: LancamentoTesouraria[] | null = null;
@@ -17,12 +17,15 @@ function chavePeriodo(ano: number | string, mes?: number | string | null): strin
 
 /** Depois de validar/editar/excluir: mantém só o período atual (já atualizado) e descarta os demais. */
 function sincronizarCacheRelatorios() {
+  dashboardCache.clear();
   relatoriosCache.clear();
   if (memoryLancamentos && chaveLancamentosAtual) {
     relatoriosCache.set(chaveLancamentosAtual, { data: memoryLancamentos, at: lastLancamentosFetch });
   }
 }
 let memoryUnidades: UnidadeCadastrada[] | null = null;
+// Totais do Dashboard por ano ("todos" = todos os anos)
+const dashboardCache = new Map<string, { data: AgregadoDashboard[]; at: number }>();
 let lastUnidadesFetch = 0;
 const CACHE_TTL_MS = 3 * 60 * 1000; // 3 minutes cache (no polling)
 
@@ -316,6 +319,7 @@ export const TreasuryService = {
     relatoriosCache.clear();
     chaveLancamentosAtual = null;
     memoryUnidades = null;
+    dashboardCache.clear();
     lastLancamentosFetch = 0;
     lastUnidadesFetch = 0;
     limpadoresDeCache.forEach((limpar) => limpar());
@@ -521,6 +525,25 @@ export const TreasuryService = {
     }
     // Em erro, nunca devolve dados de outro período como se fossem deste
     return { data: emCache?.data || [], error: apiRes.error, isAuthError: apiRes.authError };
+  },
+
+  /**
+   * Totais do Dashboard já somados no servidor: uma linha por (ano, mês, setor).
+   */
+  async fetchDashboardResumo(
+    ano: number | string,
+    forceRefresh = false
+  ): Promise<{ data: AgregadoDashboard[]; error?: string; isAuthError?: boolean }> {
+    const chave = chavePeriodo(ano);
+    const emCache = dashboardCache.get(chave);
+    if (!forceRefresh && emCache && Date.now() - emCache.at < CACHE_TTL_MS) return { data: emCache.data };
+
+    const res = await callTreasuryApi<AgregadoDashboard[]>('dashboard_resumo', { ano });
+    if (res.success && Array.isArray(res.data)) {
+      dashboardCache.set(chave, { data: res.data, at: Date.now() });
+      return { data: res.data };
+    }
+    return { data: emCache?.data || [], error: res.error, isAuthError: res.authError };
   },
 
   /**
