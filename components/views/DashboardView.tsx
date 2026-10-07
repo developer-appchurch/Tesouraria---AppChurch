@@ -52,100 +52,44 @@ const NOMES_MESES_ABREV = [
 ];
 
 /**
- * Converte qualquer representação de dia da semana (ex: 'Quarta-feira', 'quarta', 'Sábado', 'sab', 3)
- * para o índice do JavaScript Date (0 = Domingo, 1 = Segunda, ..., 6 = Sábado).
+ * Segundas-feiras (YYYY-MM-DD) das semanas que pertencem ao mês.
+ * Semana = segunda a domingo; ela pertence ao mês da sua quinta-feira
+ * (mesma regra do servidor). Todo mês tem 4 ou 5 semanas.
  */
-function getDiaSemanaIndex(dia?: string | number | null): number | null {
-  if (dia === undefined || dia === null) return null;
-
-  if (typeof dia === 'number' && Number.isInteger(dia)) {
-    if (dia >= 0 && dia <= 6) return dia;
-    if (dia === 7) return 0;
-    return null;
+function semanasDoMes(ano: number, mes: number): string[] {
+  const primeiro = new Date(Date.UTC(ano, mes - 1, 1));
+  const ateQuinta = (4 - primeiro.getUTCDay() + 7) % 7; // 4 = quinta-feira
+  const segundas: string[] = [];
+  for (let quinta = new Date(Date.UTC(ano, mes - 1, 1 + ateQuinta)); quinta.getUTCMonth() === mes - 1; ) {
+    const segunda = new Date(quinta);
+    segunda.setUTCDate(quinta.getUTCDate() - 3);
+    segundas.push(segunda.toISOString().slice(0, 10));
+    quinta.setUTCDate(quinta.getUTCDate() + 7);
   }
+  return segundas;
+}
 
-  const str = String(dia).trim();
-  if (!str) return null;
-
-  const num = Number(str);
-  if (!isNaN(num) && Number.isInteger(num)) {
-    if (num >= 0 && num <= 6) return num;
-    if (num === 7) return 0;
-  }
-
-  const s = str
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '');
-
-  if (s.includes('dom')) return 0;
-  if (s.includes('seg')) return 1;
-  if (s.includes('ter')) return 2;
-  if (s.includes('qua')) return 3;
-  if (s.includes('qui')) return 4;
-  if (s.includes('sex')) return 5;
-  if (s.includes('sab')) return 6;
-
-  return null;
+/** Domingo (YYYY-MM-DD) da semana que começa na segunda informada. */
+function domingoDaSemana(segunda: string): string {
+  const d = new Date(`${segunda}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + 6);
+  return d.toISOString().slice(0, 10);
 }
 
 /**
- * Retorna quantas vezes cada dia da semana (0 = Dom a 6 = Sáb) ocorre em determinado mês e ano.
+ * Semanas previstas no mês para uma lista de células ativas: cada célula deve
+ * entregar um relatório por semana do mês, a partir da semana em que começou
+ * (inicio_em). Não depende do dia de reunião cadastrado.
  */
-function getContagemDiasSemanaNoMes(ano: number, mes: number): number[] {
-  const contagem = [0, 0, 0, 0, 0, 0, 0];
-  const totalDias = new Date(ano, mes, 0).getDate();
-  for (let d = 1; d <= totalDias; d++) {
-    const dow = new Date(ano, mes - 1, d).getDay();
-    contagem[dow]++;
-  }
-  return contagem;
-}
-
-/** Mínimo de relatórios que cada célula ativa deve entregar por mês (1 por semana). */
-const MINIMO_RELATORIOS_POR_CELULA_MES = 4;
-
-/**
- * Relatórios previstos no mês para uma lista de células ativas.
- * Regras por célula:
- * - Mês anterior ao início da célula (inicio_em): 0 — ela ainda não existia.
- * - Mês em que a célula começou: só as reuniões a partir da data de início
- *   (ocorrências do dia de reunião; sem dia cadastrado, as semanas restantes, até 4).
- * - Demais meses: no mínimo 4 relatórios; 5 se o dia da reunião ocorrer 5 vezes no mês.
- */
-function calcularEncontrosPrevistosMes(
-  ano: number,
-  mes: number,
-  unidades: UnidadeCadastrada[]
-): number {
+function calcularSemanasPrevistasMes(ano: number, mes: number, unidades: UnidadeCadastrada[]): number {
   if (!unidades || unidades.length === 0) return 0;
-  const contagemDias = getContagemDiasSemanaNoMes(ano, mes);
-  const diasNoMes = new Date(ano, mes, 0).getDate();
-  const inicioDoMes = `${ano}-${String(mes).padStart(2, '0')}-01`;
-  const fimDoMes = `${ano}-${String(mes).padStart(2, '0')}-${String(diasNoMes).padStart(2, '0')}`;
-
   let total = 0;
-  for (const u of unidades) {
-    const dow = getDiaSemanaIndex(u.dia_semana);
-    const inicio = u.inicio_em ? String(u.inicio_em).slice(0, 10) : null;
-
-    if (inicio && inicio > fimDoMes) continue; // ainda não existia neste mês
-
-    if (inicio && inicio > inicioDoMes) {
-      // Começou no meio deste mês: conta só a partir do dia de início
-      const diaInicio = Number(inicio.slice(8, 10));
-      if (dow !== null) {
-        for (let d = diaInicio; d <= diasNoMes; d++) {
-          if (new Date(ano, mes - 1, d).getDay() === dow) total++;
-        }
-      } else {
-        total += Math.min(MINIMO_RELATORIOS_POR_CELULA_MES, Math.ceil((diasNoMes - diaInicio + 1) / 7));
-      }
-      continue;
+  for (const segunda of semanasDoMes(ano, mes)) {
+    const domingo = domingoDaSemana(segunda);
+    for (const u of unidades) {
+      const inicio = u.inicio_em ? String(u.inicio_em).slice(0, 10) : null;
+      if (!inicio || inicio <= domingo) total++;
     }
-
-    const ocorrencias = dow !== null ? contagemDias[dow] : 0;
-    total += Math.max(MINIMO_RELATORIOS_POR_CELULA_MES, ocorrencias);
   }
   return total;
 }
@@ -342,7 +286,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   // Relatórios previstos no período para um grupo de células (todas, ou as de um setor)
   const previstosNoPeriodo = useCallback(
     (celulas: UnidadeCadastrada[]) =>
-      mesesDoPeriodo.reduce((acc, { ano, mes }) => acc + calcularEncontrosPrevistosMes(ano, mes, celulas), 0),
+      mesesDoPeriodo.reduce((acc, { ano, mes }) => acc + calcularSemanasPrevistasMes(ano, mes, celulas), 0),
     [mesesDoPeriodo]
   );
 
@@ -364,11 +308,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         const mesItem = Number(numMesSelecionado) || 1;
         const previstos = ehMesFuturo(anoItem, mesItem)
           ? 0
-          : calcularEncontrosPrevistosMes(anoItem, mesItem, unidadesMaisBaixas);
+          : calcularSemanasPrevistasMes(anoItem, mesItem, unidadesMaisBaixas);
 
-        const totalRelatorios = doAnoEMes.reduce((acc, a) => acc + a.enviados, 0);
-        const validados = doAnoEMes.reduce((acc, a) => acc + a.validados, 0);
-        // % = validados pela tesouraria / máx(previstos, lançados) do período
+        // Semanas (célula x semana) entregues e validadas
+        const totalRelatorios = doAnoEMes.reduce((acc, a) => acc + a.semanas_entregues, 0);
+        const validados = doAnoEMes.reduce((acc, a) => acc + a.semanas_validadas, 0);
+        // % = semanas validadas / máx(semanas previstas, entregues) do período
         const base = baseDoPercentual(previstos, totalRelatorios);
         const perc = percentualValidados(validados, base);
 
@@ -397,13 +342,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       const anosDoMes = isTodosAnos ? anosDisponiveis : [Number(anoSelecionado) || new Date().getFullYear()];
       const previstos = anosDoMes.reduce(
         (acc, anoItem) =>
-          ehMesFuturo(Number(anoItem), mesNum) ? acc : acc + calcularEncontrosPrevistosMes(Number(anoItem), mesNum, unidadesMaisBaixas),
+          ehMesFuturo(Number(anoItem), mesNum) ? acc : acc + calcularSemanasPrevistasMes(Number(anoItem), mesNum, unidadesMaisBaixas),
         0
       );
 
-      const totalRelatorios = doMes.reduce((acc, a) => acc + a.enviados, 0);
-      const validados = doMes.reduce((acc, a) => acc + a.validados, 0);
-      // % = validados pela tesouraria / máx(previstos, lançados) do mês
+      // Semanas (célula x semana) entregues e validadas
+      const totalRelatorios = doMes.reduce((acc, a) => acc + a.semanas_entregues, 0);
+      const validados = doMes.reduce((acc, a) => acc + a.semanas_validadas, 0);
+      // % = semanas validadas / máx(semanas previstas, entregues) do mês
       const base = baseDoPercentual(previstos, totalRelatorios);
       const perc = percentualValidados(validados, base);
 
@@ -578,8 +524,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
     // O setor de cada linha já vem resolvido pelo servidor (unidade pai da célula)
     agregadosPeriodo.forEach((a) => {
-      enviadosPorSetor.set(a.setor, (enviadosPorSetor.get(a.setor) || 0) + a.enviados);
-      validadosPorSetor.set(a.setor, (validadosPorSetor.get(a.setor) || 0) + a.validados);
+      enviadosPorSetor.set(a.setor, (enviadosPorSetor.get(a.setor) || 0) + a.semanas_entregues);
+      validadosPorSetor.set(a.setor, (validadosPorSetor.get(a.setor) || 0) + a.semanas_validadas);
     });
 
     const lista = Array.from(todosSetores).map((nome) => {
@@ -594,9 +540,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       const enviados = enviadosPorSetor.get(nome) || 0;
       const validados = validadosPorSetor.get(nome) || 0;
 
-      // % = validados pela tesouraria / máx(previstos, lançados) do setor no período
-      // (previstos = células ativas do setor x máx(4, ocorrências do dia de reunião no mês);
-      //  se o setor lançou mais que o previsto, a base é o total lançado)
+      // % = semanas validadas / máx(semanas previstas, semanas entregues) do setor no período
+      // (previstas = células ativas do setor x semanas do mês, a partir do início de cada célula)
       const base = baseDoPercentual(previstos, enviados);
       const perc = percentualValidados(validados, base);
 
@@ -607,8 +552,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     return lista;
   }, [unidadesCadastradas, unidadesMaisBaixas, agregados, agregadosPeriodo, previstosNoPeriodo]);
 
-  const totalLancadosMes = agregadosPeriodo.reduce((acc, a) => acc + a.enviados, 0);
-  const totalValidadosMes = agregadosPeriodo.reduce((acc, a) => acc + a.validados, 0);
+  // Contagem por semana: cada célula entrega um relatório por semana do mês
+  const totalLancadosMes = agregadosPeriodo.reduce((acc, a) => acc + a.semanas_entregues, 0);
+  const totalValidadosMes = agregadosPeriodo.reduce((acc, a) => acc + a.semanas_validadas, 0);
   const percPrevistosMes =
     relatoriosPrevistos > 0 ? Math.min(100, Math.round((totalLancadosMes / relatoriosPrevistos) * 100)) : 0;
   // Validados: base = previstos ou lançados (o maior), igual ao ranking e ao gráfico
@@ -849,7 +795,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     : 'Relatórios Recebidos Mês a Mês (%)'}
                 </h3>
                 <p className="text-[11px] text-slate-400 mt-0.5">
-                  % de relatórios validados pela tesouraria sobre os previstos (células ativas × mín. 4 por mês, a partir do início de cada célula) ou sobre os lançados, se maior
+                  % de semanas validadas pela tesouraria: cada célula ativa entrega 1 relatório por semana do mês
                 </p>
               </div>
             </div>
@@ -870,7 +816,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       key={m.nome}
                       data-col-index={idx}
                       className="flex flex-col items-center h-full justify-end group relative"
-                      title={`${m.nome}: ${m.validados} validados de ${m.base} (${m.perc}%) • ${m.previstos} previstos, ${m.totalRelatorios} lançados`}
+                      title={`${m.nome}: ${m.validados} semanas validadas de ${m.base} (${m.perc}%) • ${m.previstos} previstas, ${m.totalRelatorios} entregues`}
                     >
                       <div className="h-5 flex items-center justify-center mb-1">
                         {m.perc > 0 && (
@@ -992,7 +938,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     <div className="flex items-center gap-2 shrink-0">
                       <span
                         className="text-[10px] text-slate-400 font-mono"
-                        title={`${s.validados} validados de ${s.base} • ${s.previstos} previstos, ${s.enviados} lançados`}
+                        title={`${s.validados} semanas validadas de ${s.base} • ${s.previstos} previstas, ${s.enviados} entregues`}
                       >
                         ({s.validados}/{s.base})
                       </span>

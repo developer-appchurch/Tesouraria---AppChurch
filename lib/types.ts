@@ -170,4 +170,8 @@ export interface AgregadoDashboard {
   validados: number;
   pix_validado: number;
   especie_validado: number;
+  /** Semanas (célula x semana) com relatório; semana pertence ao mês da sua quinta-feira */
+  semanas_entregues: number;
+  /** Semanas em que todos os relatórios da célula foram validados */
+  semanas_validadas: number;
 }

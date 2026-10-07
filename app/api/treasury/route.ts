@@ -396,9 +396,19 @@ function setoresDaIgreja(unidades: Map<string, Unidade>): string[] {
 async function carregarRelatorios(
   supabase: SupabaseClient,
   igrejaId: string,
-  params: { ano?: any; mes?: any; somentePendentes?: any; setorId?: any }
+  params: { ano?: any; mes?: any; somentePendentes?: any; setorId?: any; margemDias?: number }
 ) {
-  const { inicio, fim, pMes, todosAnos } = resolverPeriodo(params.ano, params.mes);
+  const periodo = resolverPeriodo(params.ano, params.mes);
+  const { pMes, todosAnos } = periodo;
+  // Margem opcional (dias) antes e depois do período: semanas na virada do ano/mês
+  const deslocar = (data: string | null, dias: number) => {
+    if (!data || !dias) return data;
+    const d = new Date(`${data}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + dias);
+    return d.toISOString().slice(0, 10);
+  };
+  const inicio = deslocar(periodo.inicio, -(params.margemDias || 0));
+  const fim = deslocar(periodo.fim, params.margemDias || 0);
   const somentePendentes = typeof params.somentePendentes === 'boolean' ? params.somentePendentes : null;
 
   const [unidadesMap, membrosMap, rows] = await Promise.all([
@@ -482,7 +492,26 @@ type AgregadoDashboard = {
   validados: number;
   pix_validado: number;
   especie_validado: number;
+  /** Semanas (célula x semana) com relatório, pelo mês da quinta-feira da semana */
+  semanas_entregues: number;
+  /** Semanas em que todos os relatórios da célula foram validados */
+  semanas_validadas: number;
 };
+
+/** Segunda-feira (YYYY-MM-DD) da semana de uma data YYYY-MM-DD. */
+function segundaDaSemana(data: string): string {
+  const d = new Date(`${data.slice(0, 10)}T00:00:00Z`);
+  const diaIso = d.getUTCDay() === 0 ? 7 : d.getUTCDay(); // 1 = segunda ... 7 = domingo
+  d.setUTCDate(d.getUTCDate() - (diaIso - 1));
+  return d.toISOString().slice(0, 10);
+}
+
+/** Ano e mês a que a semana pertence: o da sua quinta-feira. */
+function mesDaSemana(segunda: string): { ano: number; mes: number } {
+  const d = new Date(`${segunda}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + 3);
+  return { ano: d.getUTCFullYear(), mes: d.getUTCMonth() + 1 };
+}
 
 // Função SQL opcional (supabase/migrations/..._tesouraria_dashboard_resumo.sql).
 // Se não estiver instalada, guarda isso por 10 min e soma no próprio servidor.
@@ -494,7 +523,9 @@ async function resumoDashboard(supabase: SupabaseClient, igrejaId: string, ano: 
 
   if (Date.now() >= rpcDashboardIndisponivelAte) {
     const { data, error } = await supabase.rpc('tesouraria_dashboard_resumo', { p_igreja_id: igrejaId, p_ano: anoParam });
-    if (!error) {
+    // Versão antiga da função (sem as colunas de semanas): calcula aqui até o SQL novo ser aplicado
+    const versaoComSemanas = !error && (!data?.length || 'semanas_entregues' in data[0]);
+    if (!error && versaoComSemanas) {
       return (data || []).map((r: any) => ({
         ano: Number(r.ano),
         mes: Number(r.mes),
@@ -503,30 +534,64 @@ async function resumoDashboard(supabase: SupabaseClient, igrejaId: string, ano: 
         validados: Number(r.validados) || 0,
         pix_validado: Number(r.pix_validado) || 0,
         especie_validado: Number(r.especie_validado) || 0,
+        semanas_entregues: Number(r.semanas_entregues) || 0,
+        semanas_validadas: Number(r.semanas_validadas) || 0,
       }));
     }
-    const funcaoAusente = error.code === 'PGRST202' || error.code === '42883';
-    if (!funcaoAusente) throw new HttpError(400, error.message);
+    if (error && error.code !== 'PGRST202' && error.code !== '42883') throw new HttpError(400, error.message);
     rpcDashboardIndisponivelAte = Date.now() + 10 * 60 * 1000;
   }
 
-  // Alternativa sem a função SQL: mesmos totais calculados aqui (em centavos)
-  const relatorios = await carregarRelatorios(supabase, igrejaId, { ano: anoParam ?? 'todos' });
-  const grupos = new Map<string, AgregadoDashboard & { pixCent: number; espCent: number }>();
-  relatorios.forEach((r) => {
-    const chave = `${r.ano}|${r.mes}|${r.setor}`;
-    const g = grupos.get(chave) || {
-      ano: r.ano, mes: r.mes, setor: r.setor, enviados: 0, validados: 0,
-      pix_validado: 0, especie_validado: 0, pixCent: 0, espCent: 0,
-    };
-    g.enviados++;
-    if (r.tesouraria_recebido) {
-      g.validados++;
-      g.pixCent += Math.round(r.valor_pix * 100);
-      g.espCent += Math.round(r.valor_especie * 100);
+  // Alternativa sem a função SQL: mesmos totais calculados aqui (valores em centavos).
+  // Margem de 7 dias: semanas na virada do ano pertencem ao ano da quinta-feira.
+  const relatorios = await carregarRelatorios(supabase, igrejaId, { ano: anoParam ?? 'todos', margemDias: 7 });
+  type Grupo = AgregadoDashboard & { pixCent: number; espCent: number };
+  const grupos = new Map<string, Grupo>();
+  const grupo = (ano: number, mes: number, setor: string): Grupo => {
+    const chave = `${ano}|${mes}|${setor}`;
+    let g = grupos.get(chave);
+    if (!g) {
+      g = {
+        ano, mes, setor, enviados: 0, validados: 0, pix_validado: 0, especie_validado: 0,
+        semanas_entregues: 0, semanas_validadas: 0, pixCent: 0, espCent: 0,
+      };
+      grupos.set(chave, g);
     }
-    grupos.set(chave, g);
+    return g;
+  };
+
+  // Quantidades e valores pelo mês da data do relatório
+  const semanas = new Map<string, { setor: string; segunda: string; validada: boolean }>();
+  relatorios.forEach((r) => {
+    if (anoParam === null || r.ano === anoParam) {
+      const g = grupo(r.ano, r.mes, r.setor);
+      g.enviados++;
+      if (r.tesouraria_recebido) {
+        g.validados++;
+        g.pixCent += Math.round(r.valor_pix * 100);
+        g.espCent += Math.round(r.valor_especie * 100);
+      }
+    }
+    // Uma entrada por célula x semana; validada só se todos os relatórios da semana foram validados
+    const segunda = segundaDaSemana(r.data_relatorio);
+    const chave = `${r.unidade_id || r.id}|${segunda}`;
+    const atual = semanas.get(chave);
+    semanas.set(chave, {
+      setor: r.setor,
+      segunda,
+      validada: (atual ? atual.validada : true) && r.tesouraria_recebido,
+    });
   });
+
+  // Semanas pelo mês da quinta-feira da semana
+  semanas.forEach(({ setor, segunda, validada }) => {
+    const { ano, mes } = mesDaSemana(segunda);
+    if (anoParam !== null && ano !== anoParam) return;
+    const g = grupo(ano, mes, setor);
+    g.semanas_entregues++;
+    if (validada) g.semanas_validadas++;
+  });
+
   return Array.from(grupos.values()).map(({ pixCent, espCent, ...g }) => ({
     ...g,
     pix_validado: pixCent / 100,
