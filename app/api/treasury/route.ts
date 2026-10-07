@@ -534,6 +534,63 @@ async function resumoDashboard(supabase: SupabaseClient, igrejaId: string, ano: 
   }));
 }
 
+// Função SQL opcional (supabase/migrations/..._tesouraria_inicio_unidades.sql).
+let rpcInicioIndisponivelAte = 0;
+const inicioCache = new CacheLimitado<Map<string, string>>(CACHE_MAX_IGREJAS, CACHE_TTL_MS);
+
+/**
+ * Data de início (YYYY-MM-DD) de cada unidade: a mais antiga entre a criação e o
+ * primeiro relatório lançado (as unidades importadas têm criado_em = data da importação).
+ */
+async function inicioDasUnidades(
+  supabase: SupabaseClient,
+  igrejaId: string,
+  unidades: { id: string; criado_em?: string | null }[]
+): Promise<Map<string, string>> {
+  const emCache = inicioCache.get(igrejaId);
+  if (emCache) return emCache;
+
+  const inicio = new Map<string, string>();
+  let viaRpc = false;
+  if (Date.now() >= rpcInicioIndisponivelAte) {
+    const { data, error } = await supabase.rpc('tesouraria_inicio_unidades', { p_igreja_id: igrejaId });
+    if (!error) {
+      (data || []).forEach((r: any) => r.inicio && inicio.set(String(r.unidade_id), String(r.inicio).slice(0, 10)));
+      viaRpc = true;
+    } else if (error.code === 'PGRST202' || error.code === '42883') {
+      rpcInicioIndisponivelAte = Date.now() + 10 * 60 * 1000;
+    } else {
+      throw new HttpError(400, error.message);
+    }
+  }
+
+  if (!viaRpc) {
+    // Alternativa sem a função SQL: primeiro relatório de cada unidade + data de criação
+    const relatorios = await buscarTodos<{ unidade_id: string | null; data_relatorio: string | null }>(() =>
+      supabase
+        .from('relatorios_semanais')
+        .select('unidade_id, data_relatorio')
+        .eq('igreja_id', igrejaId)
+        .not('unidade_id', 'is', null)
+        .order('id')
+    );
+    relatorios.forEach((r) => {
+      if (!r.unidade_id || !r.data_relatorio) return;
+      const data = String(r.data_relatorio).slice(0, 10);
+      const atual = inicio.get(String(r.unidade_id));
+      if (!atual || data < atual) inicio.set(String(r.unidade_id), data);
+    });
+    unidades.forEach((u) => {
+      const criado = u.criado_em ? String(u.criado_em).slice(0, 10) : null;
+      const atual = inicio.get(String(u.id));
+      if (criado && (!atual || criado < atual)) inicio.set(String(u.id), criado);
+    });
+  }
+
+  inicioCache.set(igrejaId, inicio);
+  return inicio;
+}
+
 function validarId(id: any): string {
   const s = String(id || '').trim();
   if (!UUID_RE.test(s)) throw new HttpError(400, 'Identificador de relatório inválido.');
@@ -600,7 +657,7 @@ export async function POST(req: NextRequest) {
           buscarTodos<any>(() =>
             supabase
               .from('unidades')
-              .select('id, nome, pai_id, ativo, nivel_tipo_id, igreja_id, dia_semana')
+              .select('id, nome, pai_id, ativo, nivel_tipo_id, igreja_id, dia_semana, criado_em')
               .eq('igreja_id', igrejaId)
               .order('nome', { ascending: true })
               .order('id', { ascending: true })
@@ -615,10 +672,14 @@ export async function POST(req: NextRequest) {
           null
         );
 
+        // Início de cada célula: o Dashboard não prevê relatórios antes dele
+        const inicio = await inicioDasUnidades(supabase, igrejaId, rows);
+
         const data = rows.map((u: any) => {
           const lids = lideresPorUnidade.get(String(u.id)) || [];
           return {
             ...u,
+            inicio_em: inicio.get(String(u.id)) || (u.criado_em ? String(u.criado_em).slice(0, 10) : null),
             eh_celula: nivelCelula && u.nivel_tipo_id ? String(u.nivel_tipo_id) === nivelCelula.id : null,
             lideres: lids,
             lider_nome: lids.join(', ') || null,

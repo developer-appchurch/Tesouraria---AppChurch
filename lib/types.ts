@@ -157,6 +157,8 @@ export interface UnidadeCadastrada {
   lider_nome?: string | null;
   /** true se a unidade é do nível "célula" da igreja (maior ordem em nivel_tipo) */
   eh_celula?: boolean | null;
+  /** Início da unidade (YYYY-MM-DD): a mais antiga entre a criação e o primeiro relatório */
+  inicio_em?: string | null;
 }
 
 /** Uma linha de totais do Dashboard: relatórios de um setor num mês. */

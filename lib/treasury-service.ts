@@ -590,6 +590,7 @@ export const TreasuryService = {
       lideres: Array.isArray(u.lideres) ? u.lideres : [],
       lider_nome: u.lider_nome ? String(u.lider_nome).trim() : null,
       eh_celula: typeof u.eh_celula === 'boolean' ? u.eh_celula : null,
+      inicio_em: u.inicio_em ? String(u.inicio_em).slice(0, 10) : null,
     }));
     memoryUnidades = lista;
     lastUnidadesFetch = now;

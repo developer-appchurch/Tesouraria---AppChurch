@@ -107,8 +107,11 @@ const MINIMO_RELATORIOS_POR_CELULA_MES = 4;
 
 /**
  * Relatórios previstos no mês para uma lista de células ativas.
- * Regra: cada célula entrega no mínimo 4 relatórios por mês. Se tiver dia de reunião
- * cadastrado e esse dia ocorrer 5 vezes no mês, são previstos 5.
+ * Regras por célula:
+ * - Mês anterior ao início da célula (inicio_em): 0 — ela ainda não existia.
+ * - Mês em que a célula começou: só as reuniões a partir da data de início
+ *   (ocorrências do dia de reunião; sem dia cadastrado, as semanas restantes, até 4).
+ * - Demais meses: no mínimo 4 relatórios; 5 se o dia da reunião ocorrer 5 vezes no mês.
  */
 function calcularEncontrosPrevistosMes(
   ano: number,
@@ -117,10 +120,30 @@ function calcularEncontrosPrevistosMes(
 ): number {
   if (!unidades || unidades.length === 0) return 0;
   const contagemDias = getContagemDiasSemanaNoMes(ano, mes);
+  const diasNoMes = new Date(ano, mes, 0).getDate();
+  const inicioDoMes = `${ano}-${String(mes).padStart(2, '0')}-01`;
+  const fimDoMes = `${ano}-${String(mes).padStart(2, '0')}-${String(diasNoMes).padStart(2, '0')}`;
 
   let total = 0;
   for (const u of unidades) {
     const dow = getDiaSemanaIndex(u.dia_semana);
+    const inicio = u.inicio_em ? String(u.inicio_em).slice(0, 10) : null;
+
+    if (inicio && inicio > fimDoMes) continue; // ainda não existia neste mês
+
+    if (inicio && inicio > inicioDoMes) {
+      // Começou no meio deste mês: conta só a partir do dia de início
+      const diaInicio = Number(inicio.slice(8, 10));
+      if (dow !== null) {
+        for (let d = diaInicio; d <= diasNoMes; d++) {
+          if (new Date(ano, mes - 1, d).getDay() === dow) total++;
+        }
+      } else {
+        total += Math.min(MINIMO_RELATORIOS_POR_CELULA_MES, Math.ceil((diasNoMes - diaInicio + 1) / 7));
+      }
+      continue;
+    }
+
     const ocorrencias = dow !== null ? contagemDias[dow] : 0;
     total += Math.max(MINIMO_RELATORIOS_POR_CELULA_MES, ocorrencias);
   }
@@ -826,7 +849,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     : 'Relatórios Recebidos Mês a Mês (%)'}
                 </h3>
                 <p className="text-[11px] text-slate-400 mt-0.5">
-                  % de relatórios validados pela tesouraria sobre os previstos (células ativas × mín. 4 por mês) ou sobre os lançados, se maior
+                  % de relatórios validados pela tesouraria sobre os previstos (células ativas × mín. 4 por mês, a partir do início de cada célula) ou sobre os lançados, se maior
                 </p>
               </div>
             </div>
