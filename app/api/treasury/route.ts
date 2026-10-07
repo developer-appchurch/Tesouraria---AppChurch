@@ -23,6 +23,7 @@ const CACHE_MAX_IGREJAS = 200;
 const AUTH_CACHE_TTL_MS = 2 * 60 * 1000; // sessão e permissão: acesso removido deixa de valer em até 2 min
 const AUTH_CACHE_MAX = 5000;
 const LIMITE_REQ_POR_MINUTO = 120; // por usuário, por instância do servidor
+const FILTRO_PENDENTE = 'tesouraria_recebido.is.null,tesouraria_recebido.eq.false';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const COLUNAS_RELATORIO =
@@ -412,7 +413,7 @@ async function carregarRelatorios(
         .order('id', { ascending: true });
       if (inicio) q = q.gte('data_relatorio', inicio);
       if (fim) q = q.lt('data_relatorio', fim);
-      if (somentePendentes === true) q = q.or('tesouraria_recebido.eq.false,tesouraria_recebido.is.null');
+      if (somentePendentes === true) q = q.or(FILTRO_PENDENTE);
       else if (somentePendentes === false) q = q.eq('tesouraria_recebido', true);
       return q;
     }),
@@ -696,7 +697,7 @@ export async function POST(req: NextRequest) {
         const id = validarId(params.id);
         const nowIso = new Date().toISOString();
         const confirmar = action === 'confirmar_individual';
-        const { data, error } = await supabase
+        let q = supabase
           .from('relatorios_semanais')
           .update({
             tesouraria_recebido: confirmar,
@@ -705,10 +706,26 @@ export async function POST(req: NextRequest) {
             atualizado_em: nowIso,
           })
           .eq('id', id)
-          .eq('igreja_id', igrejaId)
-          .select('id');
+          .eq('igreja_id', igrejaId);
+        // Só muda quem ainda está no estado oposto: dois tesoureiros validando ao mesmo
+        // tempo não sobrescrevem quem validou primeiro (nem a data do recebimento)
+        q = confirmar ? q.or(FILTRO_PENDENTE) : q.eq('tesouraria_recebido', true);
+        const { data, error } = await q.select('id');
         if (error) throw new HttpError(400, error.message);
-        if (!data?.length) throw new HttpError(404, 'Relatório não encontrado nesta igreja.');
+        if (!data?.length) {
+          const { data: existe } = await supabase
+            .from('relatorios_semanais')
+            .select('id')
+            .eq('id', id)
+            .eq('igreja_id', igrejaId)
+            .maybeSingle();
+          if (!existe) throw new HttpError(404, 'Relatório não encontrado nesta igreja.');
+          // Já estava no estado pedido (outra pessoa fez antes): nada a alterar
+          return NextResponse.json({
+            success: true,
+            message: confirmar ? 'Este relatório já havia sido validado.' : 'Este relatório já estava pendente.',
+          });
+        }
         return NextResponse.json({ success: true });
       }
 
@@ -717,19 +734,25 @@ export async function POST(req: NextRequest) {
         if (ids.length === 0) return NextResponse.json({ success: true, count: 0 });
         if (ids.length > 1000) throw new HttpError(400, 'Selecione no máximo 1000 relatórios por vez.');
         const nowIso = new Date().toISOString();
-        const { data, error } = await supabase
-          .from('relatorios_semanais')
-          .update({
-            tesouraria_recebido: true,
-            data_recebimento: nowIso,
-            tesoureiro_id: membro.id,
-            atualizado_em: nowIso,
-          })
-          .in('id', ids)
-          .eq('igreja_id', igrejaId)
-          .select('id');
-        if (error) throw new HttpError(400, error.message);
-        return NextResponse.json({ success: true, count: data?.length || 0 });
+        // Em lotes: 1000 ids numa só URL passariam do limite de tamanho da requisição
+        let count = 0;
+        for (let i = 0; i < ids.length; i += 150) {
+          const { data, error } = await supabase
+            .from('relatorios_semanais')
+            .update({
+              tesouraria_recebido: true,
+              data_recebimento: nowIso,
+              tesoureiro_id: membro.id,
+              atualizado_em: nowIso,
+            })
+            .in('id', ids.slice(i, i + 150))
+            .eq('igreja_id', igrejaId)
+            .or(FILTRO_PENDENTE) // não sobrescreve quem já validou
+            .select('id');
+          if (error) throw new HttpError(400, error.message);
+          count += data?.length || 0;
+        }
+        return NextResponse.json({ success: true, count });
       }
 
       case 'atualizar_valores': {

@@ -381,7 +381,7 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
     ids: string[],
     validar: boolean,
     chamarServidor: () => Promise<{ success: boolean; error?: string; count?: number }>,
-    mensagens: { sucesso: string; erro: string }
+    mensagens: { sucesso: string | ((count?: number) => string); erro: string }
   ) => {
     const idsSet = new Set(ids);
     const anteriores = new Map(relatorios.filter((r) => idsSet.has(r.id)).map((r) => [r.id, r]));
@@ -408,9 +408,11 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
     }
 
     let erro: string | null = null;
+    let count: number | undefined;
     try {
       const res = await chamarServidor();
       if (!res.success) erro = res.error || 'falha no servidor';
+      count = res.count;
     } catch (err: any) {
       erro = err?.message || 'falha de conexão';
     }
@@ -419,7 +421,7 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
       setRelatorios((prev) => prev.map((r) => anteriores.get(r.id) ?? r));
       onShowToast(`${mensagens.erro}: ${erro}`);
     } else {
-      onShowToast(mensagens.sucesso);
+      onShowToast(typeof mensagens.sucesso === 'function' ? mensagens.sucesso(count) : mensagens.sucesso);
     }
   };
 
@@ -439,7 +441,10 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
     const ids = Array.from(selecionados);
     if (ids.length === 0) return;
     return alterarStatus(ids, true, () => TreasuryService.confirmarLancamentosEmMassa(ids, usuarioLogado?.id || ''), {
-      sucesso: `${ids.length} relatórios validados com sucesso!`,
+      sucesso: (count) =>
+        count !== undefined && count < ids.length
+          ? `${count} relatório(s) validado(s); ${ids.length - count} já haviam sido validados por outra pessoa.`
+          : `${ids.length} relatórios validados com sucesso!`,
       erro: 'Erro ao validar relatórios selecionados',
     });
   };
