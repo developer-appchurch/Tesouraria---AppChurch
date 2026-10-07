@@ -530,6 +530,15 @@ export const TreasuryService = {
   },
 
   /**
+   * Permissões da sessão atual, decididas pelo servidor (ex.: se pode gerenciar acessos).
+   */
+  async fetchMinhaSessao(): Promise<{ podeGerenciarPermissoes: boolean } | null> {
+    const res = await callTreasuryApi<{ podeGerenciarPermissoes: boolean }>('minha_sessao');
+    if (!res.success || !res.data) return null;
+    return { podeGerenciarPermissoes: res.data.podeGerenciarPermissoes === true };
+  },
+
+  /**
    * Obtém relatórios semanais da própria igreja via API
    * Utiliza cache em memória por período para evitar requisições frequentes ao Supabase
    */

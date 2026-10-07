@@ -44,6 +44,13 @@ export default function TreasuryApp() {
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [notificacao, setNotificacao] = useState<string | null>(null);
   const [isMobileNavOpen, setIsMobileNavOpen] = useState<boolean>(false);
+  // Decidido pelo servidor (papel church:admin / permissions:manage do AppChurch)
+  const [podeGerenciarPermissoes, setPodeGerenciarPermissoes] = useState<boolean>(false);
+
+  const carregarSessao = useCallback(async () => {
+    const sessao = await TreasuryService.fetchMinhaSessao();
+    setPodeGerenciarPermissoes(sessao?.podeGerenciarPermissoes === true);
+  }, []);
 
   // Filter states per view
   const [anoDashboard, setAnoDashboard] = useState<number | string>(2026);
@@ -114,6 +121,7 @@ export default function TreasuryApp() {
         const [_, unids] = await Promise.all([
           carregarDados(false),
           TreasuryService.fetchUnidadesCadastradas(false),
+          carregarSessao(),
         ]);
         if (unids && isSubscribed) {
           setUnidadesCadastradas(unids);
@@ -128,7 +136,7 @@ export default function TreasuryApp() {
     return () => {
       isSubscribed = false;
     };
-  }, [carregarDados]);
+  }, [carregarDados, carregarSessao]);
 
   // Estável entre renderizações (useCallback): telas que recebem onRefresh não re-executam efeitos à toa
   const handleRefresh = useCallback(async () => {
@@ -156,6 +164,7 @@ export default function TreasuryApp() {
     showToast(`Bem-vindo, ${membro.nome}!`);
     // A sessão acabou de ser criada: agora sim busca os dados
     carregarDados(true);
+    carregarSessao();
     TreasuryService.fetchUnidadesCadastradas(true).then((u) => {
       if (u) setUnidadesCadastradas(u);
     });
@@ -166,6 +175,7 @@ export default function TreasuryApp() {
     // Zera os dados em tela: o próximo login (talvez de outra igreja) começa limpo
     setLancamentos([]);
     setUnidadesCadastradas([]);
+    setPodeGerenciarPermissoes(false);
     setSessaoManual(null);
     setIsLoggedOut(true);
     setCurrentView('login');
@@ -215,7 +225,7 @@ export default function TreasuryApp() {
   // View efetiva
   const viewEfetiva: ViewMode = !usuarioLogado
     ? 'login'
-    : currentView === 'login'
+    : currentView === 'login' || (currentView === 'permissoes' && !podeGerenciarPermissoes)
     ? 'validar-relatorios'
     : currentView;
 
@@ -238,6 +248,7 @@ export default function TreasuryApp() {
         pendingCount={pendingCount}
         onLogout={handleLogout}
         usuarioLogado={usuarioLogado}
+        mostrarPermissoes={podeGerenciarPermissoes}
       />
 
       {/* Main Content Area */}
@@ -311,13 +322,11 @@ export default function TreasuryApp() {
             />
           </div>
 
-          <div className={viewEfetiva === 'permissoes' ? 'block min-h-full' : 'hidden'}>
-            <PermissoesView
-              usuarios={usuarios}
-              onRefresh={handleRefresh}
-              onShowToast={showToast}
-            />
-          </div>
+          {podeGerenciarPermissoes && (
+            <div className={viewEfetiva === 'permissoes' ? 'block min-h-full' : 'hidden'}>
+              <PermissoesView usuarios={usuarios} onRefresh={handleRefresh} onShowToast={showToast} />
+            </div>
+          )}
         </main>
       </div>
     </div>

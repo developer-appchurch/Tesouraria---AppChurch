@@ -34,7 +34,10 @@ type Unidade = {
   lideres?: string[];
   lider_nome?: string | null;
 };
-type Membro = { id: string; nome: string; igreja_id: string };
+type Membro = { id: string; nome: string; igreja_id: string; podeGerenciarPermissoes: boolean };
+
+/** Códigos do AppChurch (tabela permissoes) que liberam a gestão de acessos da tesouraria. */
+const CODIGOS_ADMIN = ['church:admin', 'permissions:manage'];
 
 class HttpError extends Error {
   constructor(public status: number, message: string) {
@@ -93,6 +96,12 @@ function getAdminClient(): SupabaseClient {
 
 const authCache = new Map<string, { membro: Membro; at: number }>();
 
+function invalidarSessoesDoMembro(membroId: string) {
+  authCache.forEach((v, token) => {
+    if (v.membro.id === membroId) authCache.delete(token);
+  });
+}
+
 async function autenticar(req: NextRequest, supabase: SupabaseClient): Promise<Membro> {
   const header = req.headers.get('authorization') || '';
   const token = header.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : '';
@@ -107,7 +116,7 @@ async function autenticar(req: NextRequest, supabase: SupabaseClient): Promise<M
 
   const { data: membro } = await supabase
     .from('membros')
-    .select('id, nome, igreja_id, acesso_ativo')
+    .select('id, nome, igreja_id, acesso_ativo, papel_id')
     .eq('auth_user_id', userData.user.id)
     .maybeSingle();
 
@@ -127,10 +136,46 @@ async function autenticar(req: NextRequest, supabase: SupabaseClient): Promise<M
     throw new HttpError(403, 'Usuário sem permissão de acesso à Tesouraria. Solicite a liberação à liderança da igreja.');
   }
 
-  const result: Membro = { id: String(membro.id), nome: String(membro.nome || ''), igreja_id: String(membro.igreja_id) };
+  const result: Membro = {
+    id: String(membro.id),
+    nome: String(membro.nome || ''),
+    igreja_id: String(membro.igreja_id),
+    podeGerenciarPermissoes: await temPermissaoAdmin(supabase, String(membro.id), membro.papel_id),
+  };
   if (authCache.size > 500) authCache.clear();
   authCache.set(token, { membro: result, at: now });
   return result;
+}
+
+/**
+ * true se o membro tem church:admin ou permissions:manage pelo papel
+ * (papel_permissoes) ou por concessão individual (membro_permissoes).
+ * Uma linha individual com concedida = false revoga o que vem do papel.
+ */
+async function temPermissaoAdmin(supabase: SupabaseClient, membroId: string, papelId: string | null): Promise<boolean> {
+  const { data: codigos, error } = await supabase.from('permissoes').select('id').in('codigo', CODIGOS_ADMIN);
+  if (error || !codigos?.length) return false;
+  const ids = codigos.map((c: any) => c.id);
+
+  const [individual, doPapel] = await Promise.all([
+    supabase.from('membro_permissoes').select('permissao_id, concedida').eq('membro_id', membroId).in('permissao_id', ids),
+    papelId
+      ? supabase.from('papel_permissoes').select('permissao_id').eq('papel_id', papelId).in('permissao_id', ids)
+      : Promise.resolve({ data: [] as any[] }),
+  ]);
+
+  const revogadas = new Set((individual.data || []).filter((r: any) => r.concedida === false).map((r: any) => r.permissao_id));
+  const concedidas = [
+    ...(individual.data || []).filter((r: any) => r.concedida !== false).map((r: any) => r.permissao_id),
+    ...(doPapel.data || []).map((r: any) => r.permissao_id),
+  ];
+  return concedidas.some((id) => !revogadas.has(id));
+}
+
+function exigirAdmin(membro: Membro) {
+  if (!membro.podeGerenciarPermissoes) {
+    throw new HttpError(403, 'Apenas a liderança da igreja (administrador) pode gerenciar acessos à Tesouraria.');
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -387,6 +432,14 @@ export async function POST(req: NextRequest) {
     const igrejaId = membro.igreja_id;
 
     switch (action) {
+      // Dados da sessão para a interface (ex.: mostrar ou não a tela de Permissões)
+      case 'minha_sessao': {
+        return NextResponse.json({
+          success: true,
+          data: { id: membro.id, nome: membro.nome, igreja_id: igrejaId, podeGerenciarPermissoes: membro.podeGerenciarPermissoes },
+        });
+      }
+
       // Tudo que a tela "Validar Relatórios" precisa, em UMA consulta por período
       case 'painel_validacao': {
         const relatorios = await carregarRelatorios(supabase, igrejaId, { ano: params.ano, mes: params.mes });
@@ -417,6 +470,7 @@ export async function POST(req: NextRequest) {
       }
 
       case 'listar_permissoes': {
+        exigirAdmin(membro);
         const { data: permissoes, error: permError } = await supabase
           .from('tesouraria_permissao')
           .select('*')
@@ -455,6 +509,7 @@ export async function POST(req: NextRequest) {
       }
 
       case 'buscar_membros': {
+        exigirAdmin(membro);
         const busca = String(params.busca || '').trim();
         let q = supabase
           .from('membros')
@@ -473,8 +528,18 @@ export async function POST(req: NextRequest) {
       }
 
       case 'adicionar_permissao': {
+        exigirAdmin(membro);
         const membroId = String(params.membro_id || '').trim();
-        if (!membroId) throw new HttpError(400, 'membro_id é obrigatório.');
+        if (!UUID_RE.test(membroId)) throw new HttpError(400, 'membro_id inválido.');
+
+        // Só membros ativos da própria igreja podem receber acesso
+        const { data: alvo } = await supabase
+          .from('membros')
+          .select('id')
+          .eq('id', membroId)
+          .eq('igreja_id', igrejaId)
+          .maybeSingle();
+        if (!alvo) throw new HttpError(404, 'Membro não encontrado nesta igreja.');
 
         const { data: existente } = await supabase
           .from('tesouraria_permissao')
@@ -504,7 +569,11 @@ export async function POST(req: NextRequest) {
         const id = params.id ? String(params.id).trim() : null;
         const membroId = params.membro_id ? String(params.membro_id).trim() : null;
 
+        exigirAdmin(membro);
         if (!id && !membroId) throw new HttpError(400, 'ID ou membro_id é obrigatório para remover permissão.');
+        if (membroId === membro.id) {
+          throw new HttpError(400, 'Você não pode remover o seu próprio acesso.');
+        }
 
         let q = supabase.from('tesouraria_permissao').delete().eq('igreja_id', igrejaId);
         if (id) {
@@ -513,8 +582,14 @@ export async function POST(req: NextRequest) {
           q = q.eq('membro_id', membroId);
         }
 
-        const { error } = await q;
+        // Não permite remover o próprio acesso pelo id da linha
+        q = q.neq('membro_id', membro.id);
+
+        const { data: removidos, error } = await q.select('membro_id');
         if (error) throw new HttpError(400, error.message);
+        if (!removidos?.length) throw new HttpError(404, 'Permissão não encontrada (ou é o seu próprio acesso).');
+        // Quem perdeu o acesso não continua entrando pelo cache de sessão
+        removidos.forEach((r: any) => invalidarSessoesDoMembro(String(r.membro_id)));
         return NextResponse.json({ success: true });
       }
 
