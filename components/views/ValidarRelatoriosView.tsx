@@ -66,6 +66,10 @@ interface ValidarRelatoriosViewProps {
   onShowToast: (msg: string) => void;
   usuarioLogado?: MembroItem | null;
   usuarios?: PermissaoUsuario[];
+  /** false quando a tela está escondida: não busca dados no servidor */
+  ativa?: boolean;
+  /** Informa ao app a quantidade de pendentes (badge do menu) */
+  onPendentesChange?: (qtd: number) => void;
 }
 
 const MESES_OPCOES = [
@@ -92,6 +96,8 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
   isRefreshing = false,
   onShowToast,
   usuarioLogado,
+  ativa = true,
+  onPendentesChange,
 }) => {
   // Aba principal de status: 'pendentes' (P/ Validar) vs 'confirmados'
   const [tabAtiva, setTabAtiva] = useState<'pendentes' | 'confirmados'>('pendentes');
@@ -203,6 +209,13 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
   useEffect(() => {
     let isCancelled = false;
 
+    // Escondida: não consulta. Um "Atualizar" feito em outra tela só invalida o
+    // cache, e os dados são recarregados quando esta tela for aberta de novo.
+    if (!ativa) {
+      if (isRefreshing) globalValidarCache = null;
+      return;
+    }
+
     const carregarDados = async () => {
       const pAno = isTodosAnos ? 'todos' : Number(anoSelecionado) || new Date().getFullYear();
       const pMes = mesFiltro !== 'todos' && mesFiltro !== '' ? Number(mesFiltro) : null;
@@ -279,7 +292,11 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
     return () => {
       isCancelled = true;
     };
-  }, [anoSelecionado, isTodosAnos, mesFiltro, isRefreshing, tentativaManual]);
+  }, [ativa, anoSelecionado, isTodosAnos, mesFiltro, isRefreshing, tentativaManual]);
+
+  useEffect(() => {
+    onPendentesChange?.(resumoContadores.pendentes);
+  }, [resumoContadores.pendentes, onPendentesChange]);
 
   const tentarCarregarDeNovo = useCallback(() => {
     globalValidarCache = null;

@@ -109,40 +109,56 @@ export default function TreasuryApp() {
     [periodoDados, showToast]
   );
 
-  // Carregamento inicial: só busca dados se já houver sessão salva
+  // Validar Relatórios busca seus próprios dados (painel_validacao): a lista
+  // completa de lançamentos só é necessária no Dashboard e na Relação de Envelopes.
+  const precisaLancamentos = currentView === 'dashboard' || currentView === 'relacao-envelopes';
+  const estaLogado = Boolean(usuarioLogado);
+
+  // Sessão salva: restaura o usuário, permissões e unidades UMA vez ao abrir o app
   useEffect(() => {
     let isSubscribed = true;
-
-    const fetchInitial = async () => {
+    (async () => {
       try {
         const user = await TreasuryService.getSessionUser();
         if (!user || !isSubscribed) return;
         setSessaoManual(user);
-        const [_, unids] = await Promise.all([
-          carregarDados(false),
-          TreasuryService.fetchUnidadesCadastradas(false),
-          carregarSessao(),
-        ]);
-        if (unids && isSubscribed) {
-          setUnidadesCadastradas(unids);
-        }
+        const [unids] = await Promise.all([TreasuryService.fetchUnidadesCadastradas(false), carregarSessao()]);
+        if (unids && isSubscribed) setUnidadesCadastradas(unids);
       } catch (err) {
         console.warn('Erro ao carregar dados do Supabase:', err);
       }
-    };
-
-    fetchInitial();
-
+    })();
     return () => {
       isSubscribed = false;
     };
-  }, [carregarDados, carregarSessao]);
+  }, [carregarSessao]);
+
+  // Lançamentos do período, só nas telas que usam (o serviço guarda cada período em cache)
+  useEffect(() => {
+    if (!estaLogado || !precisaLancamentos) return;
+    let cancelado = false;
+    (async () => {
+      const res = await TreasuryService.fetchRelatorios(false, periodoDados);
+      if (cancelado) return; // usuário já trocou de período/tela: ignora resposta antiga
+      if (res.error) {
+        showToast(res.isAuthError ? 'Sessão expirada ou sem permissão de tesouraria. Faça login novamente.' : res.error);
+      } else {
+        setLancamentos(res.data || []);
+      }
+    })();
+    return () => {
+      cancelado = true;
+    };
+  }, [estaLogado, precisaLancamentos, periodoDados, showToast]);
 
   // Estável entre renderizações (useCallback): telas que recebem onRefresh não re-executam efeitos à toa
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
     try {
-      const [ok, unids] = await Promise.all([carregarDados(true), TreasuryService.fetchUnidadesCadastradas(true)]);
+      const [ok, unids] = await Promise.all([
+        precisaLancamentos ? carregarDados(true) : Promise.resolve(true),
+        TreasuryService.fetchUnidadesCadastradas(true),
+      ]);
       if (unids) setUnidadesCadastradas(unids);
       if (ok) showToast('Dados sincronizados com o Supabase com sucesso!');
     } catch (err) {
@@ -150,7 +166,7 @@ export default function TreasuryApp() {
     } finally {
       setIsRefreshing(false);
     }
-  }, [carregarDados, showToast]);
+  }, [precisaLancamentos, carregarDados, showToast]);
 
   const handleLoginSuccess = (membro: MembroItem) => {
     try {
@@ -162,8 +178,7 @@ export default function TreasuryApp() {
     setIsLoggedOut(false);
     setCurrentView('validar-relatorios');
     showToast(`Bem-vindo, ${membro.nome}!`);
-    // A sessão acabou de ser criada: agora sim busca os dados
-    carregarDados(true);
+    // A sessão acabou de ser criada: os lançamentos são buscados pelo efeito acima
     carregarSessao();
     TreasuryService.fetchUnidadesCadastradas(true).then((u) => {
       if (u) setUnidadesCadastradas(u);
@@ -176,6 +191,7 @@ export default function TreasuryApp() {
     setLancamentos([]);
     setUnidadesCadastradas([]);
     setPodeGerenciarPermissoes(false);
+    setPendingCount(0);
     setSessaoManual(null);
     setIsLoggedOut(true);
     setCurrentView('login');
@@ -202,10 +218,8 @@ export default function TreasuryApp() {
     return Array.from(sSet);
   }, [lancamentos]);
 
-  // Contagem de pendentes
-  const pendingCount = useMemo(() => {
-    return lancamentos.filter((l) => l.TESOURARIA_RECEB !== true).length;
-  }, [lancamentos]);
+  // Contagem de pendentes: informada pela tela Validar Relatórios (resumo do servidor)
+  const [pendingCount, setPendingCount] = useState<number>(0);
 
   // Active header year
   const anoAtivoHeader =
@@ -291,6 +305,8 @@ export default function TreasuryApp() {
               onShowToast={showToast}
               usuarioLogado={usuarioLogado}
               usuarios={usuarios}
+              ativa={viewEfetiva === 'validar-relatorios'}
+              onPendentesChange={setPendingCount}
             />
           </div>
 
