@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 import { LancamentoTesouraria, MembroItem, PermissaoUsuario } from '@/lib/types';
 import { formatBRL, formatDateBR } from '@/lib/utils';
-import { TreasuryService, MAPA_CELULAS_SETORES } from '@/lib/treasury-service';
+import { TreasuryService, SEM_SETOR, registrarLimpezaDeCache } from '@/lib/treasury-service';
 
 interface RelatorioDetalhadoRPC {
   id: string;
@@ -53,16 +53,25 @@ interface ValidarCache {
 }
 
 let globalValidarCache: ValidarCache | null = null;
+registrarLimpezaDeCache(() => {
+  globalValidarCache = null;
+});
 
 interface ValidarRelatoriosViewProps {
   lancamentos?: LancamentoTesouraria[];
   anoSelecionado: number | string;
   onSelectAno?: (ano: number | string) => void;
+  /** Anos com relatórios na igreja (do primeiro até o atual), vindos do servidor */
+  anosBase?: number[];
   onRefresh?: () => void;
   isRefreshing?: boolean;
   onShowToast: (msg: string) => void;
   usuarioLogado?: MembroItem | null;
   usuarios?: PermissaoUsuario[];
+  /** false quando a tela está escondida: não busca dados no servidor */
+  ativa?: boolean;
+  /** Informa ao app a quantidade de pendentes (badge do menu) */
+  onPendentesChange?: (qtd: number) => void;
 }
 
 const MESES_OPCOES = [
@@ -89,6 +98,9 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
   isRefreshing = false,
   onShowToast,
   usuarioLogado,
+  ativa = true,
+  anosBase = [],
+  onPendentesChange,
 }) => {
   // Aba principal de status: 'pendentes' (P/ Validar) vs 'confirmados'
   const [tabAtiva, setTabAtiva] = useState<'pendentes' | 'confirmados'>('pendentes');
@@ -97,12 +109,40 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
   const [buscaTexto, setBuscaTexto] = useState<string>('');
 
   // Dados carregados das RPCs do Supabase - inicializa do cache se já existir
-  const [setoresList, setSetoresList] = useState<SetorPendenciaRPC[]>(() => globalValidarCache?.setores || []);
+  // Setores da igreja (nomes) vindos do servidor; os contadores são calculados da lista abaixo
+  const [setoresServidor, setSetoresServidor] = useState<SetorPendenciaRPC[]>(() => globalValidarCache?.setores || []);
   const [relatorios, setRelatorios] = useState<RelatorioDetalhadoRPC[]>(() => globalValidarCache?.relatorios || []);
-  const [resumoContadores, setResumoContadores] = useState<{ pendentes: number; confirmados: number }>(() => globalValidarCache?.resumo || {
-    pendentes: 0,
-    confirmados: 0,
-  });
+
+  // Contadores SEMPRE derivados dos relatórios: nunca ficam diferentes da lista
+  // (antes eram estados separados e desalinhavam após falhas ou cliques rápidos)
+  const resumoContadores = useMemo(() => {
+    let pendentes = 0;
+    relatorios.forEach((r) => {
+      if (r.tesouraria_recebido !== true) pendentes++;
+    });
+    return { pendentes, confirmados: relatorios.length - pendentes };
+  }, [relatorios]);
+
+  const setoresList = useMemo<SetorPendenciaRPC[]>(() => {
+    const pendentesPorSetor = new Map<string, number>();
+    relatorios.forEach((r) => {
+      if (r.tesouraria_recebido === true) return;
+      const setor = (r.setor || r.setor_nome || SEM_SETOR).trim();
+      pendentesPorSetor.set(setor, (pendentesPorSetor.get(setor) || 0) + 1);
+    });
+    const lista = setoresServidor.map((s) => ({ ...s, qtd_pendentes: pendentesPorSetor.get(s.setor_nome) || 0 }));
+    pendentesPorSetor.forEach((qtd, nome) => {
+      if (!setoresServidor.some((s) => s.setor_nome === nome)) {
+        lista.push({ setor_id: nome, setor_nome: nome, qtd_pendentes: qtd });
+      }
+    });
+    return lista;
+  }, [relatorios, setoresServidor]);
+
+  // Mantém o cache da tela igual ao que está na tela (validações, edições)
+  useEffect(() => {
+    if (globalValidarCache) globalValidarCache.relatorios = relatorios;
+  }, [relatorios]);
 
   // Estados de carregamento controlados para evitar qualquer piscar de tela
   const [isCarregandoGeral, setIsCarregandoGeral] = useState<boolean>(() => !globalValidarCache);
@@ -137,6 +177,7 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
   // Mostra apenas anos referentes aos relatórios existentes no banco
   const anosDisponiveis = useMemo(() => {
     const anosSet = new Set<number>();
+    anosBase.forEach((a) => anosSet.add(a));
 
     if (lancamentos && lancamentos.length > 0) {
       lancamentos.forEach((l) => {
@@ -176,7 +217,7 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
       anosSet.add(new Date().getFullYear());
     }
     return Array.from(anosSet).sort((a, b) => b - a);
-  }, [lancamentos, relatorios]);
+  }, [lancamentos, relatorios, anosBase]);
 
   // Se for o ano atual, exibe apenas até o mês mais recente que estamos
   const mesesDisponiveis = useMemo(() => {
@@ -200,6 +241,13 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
   useEffect(() => {
     let isCancelled = false;
 
+    // Escondida: não consulta. Um "Atualizar" feito em outra tela só invalida o
+    // cache, e os dados são recarregados quando esta tela for aberta de novo.
+    if (!ativa) {
+      if (isRefreshing) globalValidarCache = null;
+      return;
+    }
+
     const carregarDados = async () => {
       const pAno = isTodosAnos ? 'todos' : Number(anoSelecionado) || new Date().getFullYear();
       const pMes = mesFiltro !== 'todos' && mesFiltro !== '' ? Number(mesFiltro) : null;
@@ -213,8 +261,7 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
         globalValidarCache.mes === mesChave
       ) {
         if (!isCancelled) {
-          setResumoContadores(globalValidarCache.resumo);
-          setSetoresList(globalValidarCache.setores);
+          setSetoresServidor(globalValidarCache.setores);
           setRelatorios(globalValidarCache.relatorios);
           setIsCarregandoGeral(false);
         }
@@ -245,8 +292,7 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
 
         const { resumo: newResumo, setores: newSetores, relatorios: newRelatorios } = res.data;
         setErroCarregamento(null);
-        setResumoContadores(newResumo);
-        setSetoresList(newSetores);
+        setSetoresServidor(newSetores);
         setRelatorios(newRelatorios);
 
         // Salva no cache global
@@ -276,7 +322,11 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
     return () => {
       isCancelled = true;
     };
-  }, [anoSelecionado, isTodosAnos, mesFiltro, isRefreshing, tentativaManual]);
+  }, [ativa, anoSelecionado, isTodosAnos, mesFiltro, isRefreshing, tentativaManual]);
+
+  useEffect(() => {
+    onPendentesChange?.(resumoContadores.pendentes);
+  }, [resumoContadores.pendentes, onPendentesChange]);
 
   const tentarCarregarDeNovo = useCallback(() => {
     globalValidarCache = null;
@@ -285,12 +335,7 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
   }, []);
 
   // Soma de pendências de todas as abas de setores para a aba "Todos"
-  const totalPendentesSoma = useMemo(() => {
-    if (resumoContadores.pendentes !== undefined) {
-      return resumoContadores.pendentes;
-    }
-    return setoresList.reduce((acc, s) => acc + (s.qtd_pendentes || 0), 0);
-  }, [resumoContadores.pendentes, setoresList]);
+  const totalPendentesSoma = resumoContadores.pendentes;
 
   // FILTRAGEM INSTANTÂNEA CLIENT-SIDE (0ms, 0 consultas ao banco):
   // 1. Aba (P/ Validar vs Confirmados)
@@ -308,8 +353,7 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
       if (setorSelecionadoId !== null) {
         let s = (r.setor || r.setor_nome || '').trim().toLowerCase();
         if (!s) {
-          const c = (r.celula_nome || '').trim().toLowerCase();
-          s = (MAPA_CELULAS_SETORES[c] || 'safira').toLowerCase();
+          s = SEM_SETOR.toLowerCase();
         }
         if (s !== setorSelecionadoId.trim().toLowerCase()) return false;
       }
@@ -328,182 +372,81 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
     });
   }, [relatorios, tabAtiva, setorSelecionadoId, buscaTexto]);
 
-  // AÇÃO: VALIDAR RELATÓRIO COM ATUALIZAÇÃO OTIMISTA INSTANTÂNEA
-  const handleConfirmarItem = async (id: string, celulaNome: string) => {
-    const prevRelatorios = [...relatorios];
-    const prevResumo = { ...resumoContadores };
-    const prevSetores = [...setoresList];
-
-    // Atualização otimista imediata no estado
-    setRelatorios((prev) =>
-      prev.map((r) =>
-        r.id === id
-          ? {
-              ...r,
-              tesouraria_recebido: true,
-              data_recebimento: new Date().toISOString(),
-              nome_tesoureiro: usuarioLogado?.nome || 'Tesoureiro',
-            }
-          : r
-      )
-    );
-    setResumoContadores((prev) => ({
-      pendentes: Math.max(0, prev.pendentes - 1),
-      confirmados: prev.confirmados + 1,
-    }));
-    const itemTarget = relatorios.find((r) => r.id === id);
-    let itemSetor = (itemTarget?.setor || itemTarget?.setor_nome || '').toLowerCase();
-    if (!itemSetor && itemTarget?.celula_nome) {
-      itemSetor = (MAPA_CELULAS_SETORES[itemTarget.celula_nome.toLowerCase()] || 'safira').toLowerCase();
-    }
-    setSetoresList((prev) =>
-      prev.map((s) =>
-        s.setor_nome.toLowerCase() === itemSetor
-          ? { ...s, qtd_pendentes: Math.max(0, s.qtd_pendentes - 1) }
-          : s
-      )
-    );
-    setSelecionados((prev) => {
-      const next = new Set(prev);
-      next.delete(id);
-      return next;
-    });
-
-    onShowToast(`Relatório "${celulaNome}" validado com sucesso!`);
-
-    try {
-      const idUsuario = usuarioLogado?.id || '1';
-      const res = await TreasuryService.confirmarLancamento(id, idUsuario);
-      if (!res.success) {
-        setRelatorios(prevRelatorios);
-        setResumoContadores(prevResumo);
-        setSetoresList(prevSetores);
-        onShowToast(`Erro ao validar relatório: ${res.error || 'Falha na validação'}`);
-      } else {
-        if (globalValidarCache) {
-          globalValidarCache.relatorios = globalValidarCache.relatorios.map((r) =>
-            r.id === id ? { ...r, tesouraria_recebido: true } : r
-          );
-        }
-      }
-    } catch (err: any) {
-      setRelatorios(prevRelatorios);
-      setResumoContadores(prevResumo);
-      setSetoresList(prevSetores);
-      onShowToast(`Falha ao validar relatório: ${err.message}`);
-    }
-  };
-
-  // AÇÃO: DESFAZER VALIDAÇÃO COM ATUALIZAÇÃO OTIMISTA INSTANTÂNEA
-  const handleDesfazerItem = async (id: string, celulaNome: string) => {
-    const prevRelatorios = [...relatorios];
-    const prevResumo = { ...resumoContadores };
-    const prevSetores = [...setoresList];
-
-    setRelatorios((prev) =>
-      prev.map((r) =>
-        r.id === id
-          ? {
-              ...r,
-              tesouraria_recebido: false,
-              data_recebimento: null,
-              nome_tesoureiro: null,
-            }
-          : r
-      )
-    );
-    setResumoContadores((prev) => ({
-      pendentes: prev.pendentes + 1,
-      confirmados: Math.max(0, prev.confirmados - 1),
-    }));
-    const itemTarget = relatorios.find((r) => r.id === id);
-    let itemSetor = (itemTarget?.setor || itemTarget?.setor_nome || '').toLowerCase();
-    if (!itemSetor && itemTarget?.celula_nome) {
-      itemSetor = (MAPA_CELULAS_SETORES[itemTarget.celula_nome.toLowerCase()] || 'safira').toLowerCase();
-    }
-    setSetoresList((prev) =>
-      prev.map((s) =>
-        s.setor_nome.toLowerCase() === itemSetor
-          ? { ...s, qtd_pendentes: s.qtd_pendentes + 1 }
-          : s
-      )
-    );
-
-    onShowToast(`Validação do relatório "${celulaNome}" desfeita.`);
-
-    try {
-      const res = await TreasuryService.desconfirmarLancamento(id);
-      if (!res.success) {
-        setRelatorios(prevRelatorios);
-        setResumoContadores(prevResumo);
-        setSetoresList(prevSetores);
-        onShowToast(`Erro ao reverter validação: ${res.error || 'Falha ao reverter'}`);
-      } else {
-        if (globalValidarCache) {
-          globalValidarCache.relatorios = globalValidarCache.relatorios.map((r) =>
-            r.id === id ? { ...r, tesouraria_recebido: false } : r
-          );
-        }
-      }
-    } catch (err: any) {
-      setRelatorios(prevRelatorios);
-      setResumoContadores(prevResumo);
-      setSetoresList(prevSetores);
-      onShowToast(`Falha ao reverter: ${err.message}`);
-    }
-  };
-
-  // AÇÃO EM LOTE: VALIDAR SELECIONADOS COM ATUALIZAÇÃO OTIMISTA
-  const handleConfirmarSelecionados = async () => {
-    const ids = Array.from(selecionados);
-    if (ids.length === 0) return;
-
-    const prevRelatorios = [...relatorios];
-    const prevResumo = { ...resumoContadores };
-    const prevSetores = [...setoresList];
+  /**
+   * Validação/desfazer com atualização otimista. Em caso de falha, desfaz SÓ os
+   * itens desta ação, voltando cada um ao estado anterior (antes restaurava uma
+   * cópia inteira da lista, apagando outras validações feitas nesse meio tempo).
+   */
+  const alterarStatus = async (
+    ids: string[],
+    validar: boolean,
+    chamarServidor: () => Promise<{ success: boolean; error?: string; count?: number }>,
+    mensagens: { sucesso: string | ((count?: number) => string); erro: string }
+  ) => {
     const idsSet = new Set(ids);
+    const anteriores = new Map(relatorios.filter((r) => idsSet.has(r.id)).map((r) => [r.id, r]));
+    const agora = new Date().toISOString();
 
     setRelatorios((prev) =>
       prev.map((r) =>
         idsSet.has(r.id)
           ? {
               ...r,
-              tesouraria_recebido: true,
-              data_recebimento: new Date().toISOString(),
-              nome_tesoureiro: usuarioLogado?.nome || 'Tesoureiro',
+              tesouraria_recebido: validar,
+              data_recebimento: validar ? agora : null,
+              nome_tesoureiro: validar ? usuarioLogado?.nome || 'Tesoureiro' : null,
             }
           : r
       )
     );
-    setResumoContadores((prev) => ({
-      pendentes: Math.max(0, prev.pendentes - ids.length),
-      confirmados: prev.confirmados + ids.length,
-    }));
-    setSelecionados(new Set());
-
-    onShowToast(`${ids.length} relatórios validados com sucesso!`);
-
-    try {
-      const idUsuario = usuarioLogado?.id || '1';
-      const res = await TreasuryService.confirmarLancamentosEmMassa(ids, idUsuario);
-      if (!res.success) {
-        setRelatorios(prevRelatorios);
-        setResumoContadores(prevResumo);
-        setSetoresList(prevSetores);
-        onShowToast(`Erro ao validar relatórios selecionados: ${res.error || 'Falha na validação'}`);
-      } else {
-        if (globalValidarCache) {
-          globalValidarCache.relatorios = globalValidarCache.relatorios.map((r) =>
-            idsSet.has(r.id) ? { ...r, tesouraria_recebido: true } : r
-          );
-        }
-      }
-    } catch (err: any) {
-      setRelatorios(prevRelatorios);
-      setResumoContadores(prevResumo);
-      setSetoresList(prevSetores);
-      onShowToast(`Falha na validação em lote: ${err.message}`);
+    if (validar) {
+      setSelecionados((prev) => {
+        const next = new Set(prev);
+        ids.forEach((id) => next.delete(id));
+        return next;
+      });
     }
+
+    let erro: string | null = null;
+    let count: number | undefined;
+    try {
+      const res = await chamarServidor();
+      if (!res.success) erro = res.error || 'falha no servidor';
+      count = res.count;
+    } catch (err: any) {
+      erro = err?.message || 'falha de conexão';
+    }
+
+    if (erro) {
+      setRelatorios((prev) => prev.map((r) => anteriores.get(r.id) ?? r));
+      onShowToast(`${mensagens.erro}: ${erro}`);
+    } else {
+      onShowToast(typeof mensagens.sucesso === 'function' ? mensagens.sucesso(count) : mensagens.sucesso);
+    }
+  };
+
+  const handleConfirmarItem = (id: string, celulaNome: string) =>
+    alterarStatus([id], true, () => TreasuryService.confirmarLancamento(id, usuarioLogado?.id || ''), {
+      sucesso: `Relatório "${celulaNome}" validado com sucesso!`,
+      erro: 'Erro ao validar relatório',
+    });
+
+  const handleDesfazerItem = (id: string, celulaNome: string) =>
+    alterarStatus([id], false, () => TreasuryService.desconfirmarLancamento(id), {
+      sucesso: `Validação do relatório "${celulaNome}" desfeita.`,
+      erro: 'Erro ao reverter validação',
+    });
+
+  const handleConfirmarSelecionados = () => {
+    const ids = Array.from(selecionados);
+    if (ids.length === 0) return;
+    return alterarStatus(ids, true, () => TreasuryService.confirmarLancamentosEmMassa(ids, usuarioLogado?.id || ''), {
+      sucesso: (count) =>
+        count !== undefined && count < ids.length
+          ? `${count} relatório(s) validado(s); ${ids.length - count} já haviam sido validados por outra pessoa.`
+          : `${ids.length} relatórios validados com sucesso!`,
+      erro: 'Erro ao validar relatórios selecionados',
+    });
   };
 
   // Checkbox de seleção
@@ -541,13 +484,17 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
     const total = Number((editPix + editEspecie).toFixed(2));
 
     try {
-      await TreasuryService.editarLancamento(modalEditarItem.id, {
+      const res = await TreasuryService.editarLancamento(modalEditarItem.id, {
         celula: modalEditarItem.celula_nome,
         data: editData,
         pix: editPix,
         especie: editEspecie,
         total,
       });
+      if (!res.success) {
+        onShowToast(`Erro ao salvar: ${res.error || 'falha no servidor'}`);
+        return;
+      }
 
       setRelatorios((prev) =>
         prev.map((r) =>
@@ -556,14 +503,6 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
             : r
         )
       );
-      if (globalValidarCache) {
-        globalValidarCache.relatorios = globalValidarCache.relatorios.map((r) =>
-          r.id === modalEditarItem.id
-            ? { ...r, valor_pix: editPix, valor_especie: editEspecie }
-            : r
-        );
-      }
-
       onShowToast(`Relatório atualizado com sucesso.`);
       setModalEditarItem(null);
     } catch (e) {

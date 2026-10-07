@@ -44,13 +44,30 @@ export default function TreasuryApp() {
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [notificacao, setNotificacao] = useState<string | null>(null);
   const [isMobileNavOpen, setIsMobileNavOpen] = useState<boolean>(false);
+  // Decidido pelo servidor (papel church:admin / permissions:manage do AppChurch)
+  const [podeGerenciarPermissoes, setPodeGerenciarPermissoes] = useState<boolean>(false);
+
+  // Anos com relatórios (do primeiro até o atual), para os seletores de ano de todas as telas
+  const [primeiroAno, setPrimeiroAno] = useState<number | null>(null);
+  const anosComRelatorios = useMemo(() => {
+    const atual = new Date().getFullYear();
+    const inicio = Math.min(primeiroAno ?? atual, atual);
+    return Array.from({ length: atual - inicio + 1 }, (_, i) => atual - i);
+  }, [primeiroAno]);
+
+  const carregarSessao = useCallback(async () => {
+    const sessao = await TreasuryService.fetchMinhaSessao();
+    setPodeGerenciarPermissoes(sessao?.podeGerenciarPermissoes === true);
+    setPrimeiroAno(sessao?.primeiroAno ?? null);
+  }, []);
 
   // Filter states per view
-  const [anoDashboard, setAnoDashboard] = useState<number | string>(2026);
-  const [anoValidar, setAnoValidar] = useState<number | string>(2026);
-  const [anoEnvelopes, setAnoEnvelopes] = useState<number | string>(2026);
+  // Padrão: ano corrente (não fixo no código)
+  const [anoDashboard, setAnoDashboard] = useState<number | string>(() => new Date().getFullYear());
+  const [anoValidar, setAnoValidar] = useState<number | string>(() => new Date().getFullYear());
+  const [anoEnvelopes, setAnoEnvelopes] = useState<number | string>(() => new Date().getFullYear());
   const [mesEnvelopes, setMesEnvelopes] = useState<string>(() => String(new Date().getMonth() + 1));
-  const [setorEnvelopes, setSetorEnvelopes] = useState<string>('Safira');
+  const [setorEnvelopes, setSetorEnvelopes] = useState<string>('');
 
   // Compute active user safely across SSR and Client
   const usuarioLogado = useMemo(() => {
@@ -102,39 +119,56 @@ export default function TreasuryApp() {
     [periodoDados, showToast]
   );
 
-  // Carregamento inicial: só busca dados se já houver sessão salva
+  // Validar Relatórios (painel_validacao) e Dashboard (dashboard_resumo) buscam seus
+  // próprios dados: a lista completa de lançamentos só é usada na Relação de Envelopes.
+  const precisaLancamentos = currentView === 'relacao-envelopes';
+  const estaLogado = Boolean(usuarioLogado);
+
+  // Sessão salva: restaura o usuário, permissões e unidades UMA vez ao abrir o app
   useEffect(() => {
     let isSubscribed = true;
-
-    const fetchInitial = async () => {
+    (async () => {
       try {
         const user = await TreasuryService.getSessionUser();
         if (!user || !isSubscribed) return;
         setSessaoManual(user);
-        const [_, unids] = await Promise.all([
-          carregarDados(false),
-          TreasuryService.fetchUnidadesCadastradas(false),
-        ]);
-        if (unids && isSubscribed) {
-          setUnidadesCadastradas(unids);
-        }
+        const [unids] = await Promise.all([TreasuryService.fetchUnidadesCadastradas(false), carregarSessao()]);
+        if (unids && isSubscribed) setUnidadesCadastradas(unids);
       } catch (err) {
         console.warn('Erro ao carregar dados do Supabase:', err);
       }
-    };
-
-    fetchInitial();
-
+    })();
     return () => {
       isSubscribed = false;
     };
-  }, [carregarDados]);
+  }, [carregarSessao]);
+
+  // Lançamentos do período, só nas telas que usam (o serviço guarda cada período em cache)
+  useEffect(() => {
+    if (!estaLogado || !precisaLancamentos) return;
+    let cancelado = false;
+    (async () => {
+      const res = await TreasuryService.fetchRelatorios(false, periodoDados);
+      if (cancelado) return; // usuário já trocou de período/tela: ignora resposta antiga
+      if (res.error) {
+        showToast(res.isAuthError ? 'Sessão expirada ou sem permissão de tesouraria. Faça login novamente.' : res.error);
+      } else {
+        setLancamentos(res.data || []);
+      }
+    })();
+    return () => {
+      cancelado = true;
+    };
+  }, [estaLogado, precisaLancamentos, periodoDados, showToast]);
 
   // Estável entre renderizações (useCallback): telas que recebem onRefresh não re-executam efeitos à toa
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
     try {
-      const [ok, unids] = await Promise.all([carregarDados(true), TreasuryService.fetchUnidadesCadastradas(true)]);
+      const [ok, unids] = await Promise.all([
+        precisaLancamentos ? carregarDados(true) : Promise.resolve(true),
+        TreasuryService.fetchUnidadesCadastradas(true),
+      ]);
       if (unids) setUnidadesCadastradas(unids);
       if (ok) showToast('Dados sincronizados com o Supabase com sucesso!');
     } catch (err) {
@@ -142,18 +176,20 @@ export default function TreasuryApp() {
     } finally {
       setIsRefreshing(false);
     }
-  }, [carregarDados, showToast]);
+  }, [precisaLancamentos, carregarDados, showToast]);
 
   const handleLoginSuccess = (membro: MembroItem) => {
     try {
       localStorage.setItem('tesouraria_usuario_logado', JSON.stringify(membro));
     } catch {}
+    setLancamentos([]);
+    setUnidadesCadastradas([]);
     setSessaoManual(membro);
     setIsLoggedOut(false);
     setCurrentView('validar-relatorios');
     showToast(`Bem-vindo, ${membro.nome}!`);
-    // A sessão acabou de ser criada: agora sim busca os dados
-    carregarDados(true);
+    // A sessão acabou de ser criada: os lançamentos são buscados pelo efeito acima
+    carregarSessao();
     TreasuryService.fetchUnidadesCadastradas(true).then((u) => {
       if (u) setUnidadesCadastradas(u);
     });
@@ -161,36 +197,36 @@ export default function TreasuryApp() {
 
   const handleLogout = async () => {
     await TreasuryService.logout();
+    // Zera os dados em tela: o próximo login (talvez de outra igreja) começa limpo
+    setLancamentos([]);
+    setUnidadesCadastradas([]);
+    setPodeGerenciarPermissoes(false);
+    setPrimeiroAno(null);
+    setPendingCount(0);
     setSessaoManual(null);
     setIsLoggedOut(true);
     setCurrentView('login');
     showToast('Sessão encerrada com sucesso.');
   };
 
-  // Setores únicos
+  // Setores da igreja: pais das unidades da ponta (células) no cadastro,
+  // mais qualquer setor que apareça nos relatórios carregados
   const setoresDisponiveis = useMemo(() => {
+    const porId = new Map(unidadesCadastradas.map((u) => [u.id, u.nome]));
+    const pais = new Set(unidadesCadastradas.map((u) => u.pai_id).filter(Boolean));
     const sSet = new Set<string>();
-    sSet.add('Safira');
-    sSet.add('Fire');
-    sSet.add('White');
-    sSet.add('Black');
-    sSet.add('Azul');
-    sSet.add('Amarelo');
-    sSet.add('Legacy');
-    sSet.add('Onix');
-    sSet.add('Diamante');
-    sSet.add('Titanium');
+    unidadesCadastradas.forEach((u) => {
+      if (!pais.has(u.id) && u.pai_id && porId.get(u.pai_id)) sSet.add(porId.get(u.pai_id)!.trim());
+    });
     lancamentos.forEach((l) => {
       const s = (l.Setor || l.setor || '').trim();
       if (s) sSet.add(s);
     });
-    return Array.from(sSet);
-  }, [lancamentos]);
+    return Array.from(sSet).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  }, [unidadesCadastradas, lancamentos]);
 
-  // Contagem de pendentes
-  const pendingCount = useMemo(() => {
-    return lancamentos.filter((l) => l.TESOURARIA_RECEB !== true).length;
-  }, [lancamentos]);
+  // Contagem de pendentes: informada pela tela Validar Relatórios (resumo do servidor)
+  const [pendingCount, setPendingCount] = useState<number>(0);
 
   // Active header year
   const anoAtivoHeader =
@@ -210,7 +246,7 @@ export default function TreasuryApp() {
   // View efetiva
   const viewEfetiva: ViewMode = !usuarioLogado
     ? 'login'
-    : currentView === 'login'
+    : currentView === 'login' || (currentView === 'permissoes' && !podeGerenciarPermissoes)
     ? 'validar-relatorios'
     : currentView;
 
@@ -233,6 +269,7 @@ export default function TreasuryApp() {
         pendingCount={pendingCount}
         onLogout={handleLogout}
         usuarioLogado={usuarioLogado}
+        mostrarPermissoes={podeGerenciarPermissoes}
       />
 
       {/* Main Content Area */}
@@ -251,6 +288,8 @@ export default function TreasuryApp() {
             onSelectMes={setMesEnvelopes}
             setorSelecionado={setorEnvelopes}
             onSelectSetor={setSetorEnvelopes}
+            setoresDisponiveis={setoresDisponiveis}
+            anosBase={anosComRelatorios}
             onShowToast={showToast}
           />
         )}
@@ -275,6 +314,9 @@ export default function TreasuryApp() {
               onShowToast={showToast}
               usuarioLogado={usuarioLogado}
               usuarios={usuarios}
+              ativa={viewEfetiva === 'validar-relatorios'}
+              anosBase={anosComRelatorios}
+              onPendentesChange={setPendingCount}
             />
           </div>
 
@@ -294,7 +336,7 @@ export default function TreasuryApp() {
 
           <div className={viewEfetiva === 'dashboard' ? 'block min-h-full' : 'hidden'}>
             <DashboardView
-              lancamentos={lancamentos}
+              ativa={viewEfetiva === 'dashboard'}
               anoSelecionado={anoDashboard}
               onSelectAno={setAnoDashboard}
               onRefresh={handleRefresh}
@@ -302,17 +344,16 @@ export default function TreasuryApp() {
               onToggleMobileMenu={() => setIsMobileNavOpen((prev) => !prev)}
               onShowToast={showToast}
               unidades={unidadesCadastradas}
+              anosBase={anosComRelatorios}
               usuarioLogado={usuarioLogado}
             />
           </div>
 
-          <div className={viewEfetiva === 'permissoes' ? 'block min-h-full' : 'hidden'}>
-            <PermissoesView
-              usuarios={usuarios}
-              onRefresh={handleRefresh}
-              onShowToast={showToast}
-            />
-          </div>
+          {podeGerenciarPermissoes && (
+            <div className={viewEfetiva === 'permissoes' ? 'block min-h-full' : 'hidden'}>
+              <PermissoesView usuarios={usuarios} onRefresh={handleRefresh} onShowToast={showToast} />
+            </div>
+          )}
         </main>
       </div>
     </div>

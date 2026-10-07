@@ -11,51 +11,28 @@ function isValidHttpUrl(str?: string): boolean {
 }
 
 /**
- * Retorna as credenciais resolvidas do Supabase.
- * IMPORTANTE: No browser (typeof window !== 'undefined'), NUNCA fornece uma chave secreta (sb_secret_...),
- * pois o SDK do Supabase gera ativamente a exceção "Forbidden use of secret API key in browser".
+ * Credenciais PÚBLICAS do Supabase (URL + chave anon/publishable).
+ * Este cliente é usado no navegador: nunca aceita chave secreta (sb_secret_ / service_role).
+ * O acesso aos dados passa pela rota /api/treasury; o RLS do banco protege o resto.
  */
 export function getResolvedSupabaseCredentials(): { url: string; key: string } {
-  const isServer = typeof window === 'undefined';
   const envUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() || process.env.SUPABASE_URL?.trim();
-  const envKey =
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() ||
-    process.env.SUPABASE_ANON_KEY?.trim() ||
-    process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
+  const envKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() || process.env.SUPABASE_ANON_KEY?.trim();
 
-  let finalUrl = DEFAULT_SUPABASE_URL;
-  let finalKey = DEFAULT_SUPABASE_KEY;
+  const url = isValidHttpUrl(envUrl) ? envUrl! : DEFAULT_SUPABASE_URL;
+  const chavePublica = envKey && !envKey.startsWith('sb_secret_') && !isValidHttpUrl(envKey) && !ehServiceRole(envKey);
+  return { url, key: chavePublica ? envKey! : DEFAULT_SUPABASE_KEY };
+}
 
-  // 1. Garante que a URL seja um endereço HTTP/HTTPS válido
-  if (isValidHttpUrl(envUrl)) {
-    finalUrl = envUrl!;
-  } else if (isValidHttpUrl(envKey)) {
-    finalUrl = envKey!;
+/** JWT legado com role "service_role" (chave secreta). */
+function ehServiceRole(chave: string): boolean {
+  const partes = chave.split('.');
+  if (partes.length !== 3) return false;
+  try {
+    return JSON.parse(atob(partes[1].replace(/-/g, '+').replace(/_/g, '/'))).role === 'service_role';
+  } catch {
+    return false;
   }
-
-  // 2. Determina a chave apropriada
-  if (isServer) {
-    // No servidor Node.js: pode usar a chave de serviço (sb_secret_...) com segurança
-    if (envKey && !isValidHttpUrl(envKey)) {
-      finalKey = envKey;
-    } else if (envUrl && !isValidHttpUrl(envUrl)) {
-      finalKey = envUrl;
-    }
-  } else {
-    // No BROWSER: apenas chaves públicas (publishable ou anon JWT) são permitidas.
-    // Chaves com prefixo "sb_secret_" são terminantemente proibidas no browser pelo Supabase.
-    if (envKey && envKey.startsWith('sb_publishable_')) {
-      finalKey = envKey;
-    } else if (envUrl && envUrl.startsWith('sb_publishable_')) {
-      finalKey = envUrl;
-    } else if (envKey && !envKey.startsWith('sb_secret_') && !isValidHttpUrl(envKey)) {
-      finalKey = envKey;
-    } else {
-      finalKey = DEFAULT_SUPABASE_KEY;
-    }
-  }
-
-  return { url: finalUrl, key: finalKey };
 }
 
 const { url: resolvedUrl, key: resolvedKey } = getResolvedSupabaseCredentials();
@@ -80,34 +57,4 @@ export function getSupabaseClient(): SupabaseClient {
   });
 
   return supabaseInstance;
-}
-
-/**
- * Cria um cliente Supabase exclusivo para uso no servidor com a chave de serviço (sb_secret_...)
- */
-export function getServerSupabaseClient(): SupabaseClient {
-  const envUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() || process.env.SUPABASE_URL?.trim();
-  const envKey =
-    process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() ||
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() ||
-    process.env.SUPABASE_ANON_KEY?.trim();
-
-  let url = DEFAULT_SUPABASE_URL;
-  if (isValidHttpUrl(envUrl)) {
-    url = envUrl!;
-  }
-
-  let key = DEFAULT_SUPABASE_KEY;
-  if (envKey && !isValidHttpUrl(envKey)) {
-    key = envKey;
-  } else if (envUrl && !isValidHttpUrl(envUrl)) {
-    key = envUrl;
-  }
-
-  return createClient(url, key, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-    },
-  });
 }

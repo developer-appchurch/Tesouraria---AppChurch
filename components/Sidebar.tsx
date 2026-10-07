@@ -20,6 +20,8 @@ interface SidebarProps {
   pendingCount?: number;
   onLogout?: () => void;
   usuarioLogado?: import('@/lib/types').MembroItem | null;
+  /** Só administradores da igreja veem a tela de Permissões */
+  mostrarPermissoes?: boolean;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -30,6 +32,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   pendingCount = 0,
   onLogout,
   usuarioLogado,
+  mostrarPermissoes = false,
 }) => {
   const menuItems: {
     id: ViewMode;
@@ -58,7 +61,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       label: 'Permissões',
       icon: ShieldCheck,
     },
-  ];
+  ].filter((item) => item.id !== 'permissoes' || mostrarPermissoes) as typeof menuItems;
 
   const renderContent = (isMobile: boolean) => (
     <div className="flex flex-col h-full justify-between">

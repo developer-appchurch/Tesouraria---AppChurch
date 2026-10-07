@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { converterItemParaLancamento, MAPA_CELULAS_SETORES } from '@/lib/treasury-service';
+import { converterItemParaLancamento, SEM_SETOR } from '@/lib/treasury-service';
 
 /**
  * API da Tesouraria.
@@ -16,11 +16,14 @@ import { converterItemParaLancamento, MAPA_CELULAS_SETORES } from '@/lib/treasur
  * validação usa uma única ação ("painel_validacao") por período.
  */
 
-const SETORES_PADRAO = ['Safira', 'Fire', 'White', 'Black', 'Azul', 'Amarelo', 'Legacy', 'Onix', 'Diamante', 'Titanium'];
 const PAGE_SIZE = 1000;
 const MAX_ROWS = 20000;
-const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutos de cache em memória para unidades e membros
-const AUTH_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutos de cache para sessão e permissão
+const CACHE_TTL_MS = 5 * 60 * 1000; // unidades e membros por igreja
+const CACHE_MAX_IGREJAS = 200;
+const AUTH_CACHE_TTL_MS = 2 * 60 * 1000; // sessão e permissão: acesso removido deixa de valer em até 2 min
+const AUTH_CACHE_MAX = 5000;
+const LIMITE_REQ_POR_MINUTO = 120; // por usuário, por instância do servidor
+const FILTRO_PENDENTE = 'tesouraria_recebido.is.null,tesouraria_recebido.eq.false';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const COLUNAS_RELATORIO =
@@ -34,7 +37,45 @@ type Unidade = {
   lideres?: string[];
   lider_nome?: string | null;
 };
-type Membro = { id: string; nome: string; igreja_id: string };
+type Membro = { id: string; nome: string; igreja_id: string; podeGerenciarPermissoes: boolean };
+
+/** Códigos do AppChurch (tabela permissoes) que liberam a gestão de acessos da tesouraria. */
+const CODIGOS_ADMIN = ['church:admin', 'permissions:manage'];
+
+/**
+ * Cache em memória com validade e tamanho máximo. Ao lotar, descarta só os
+ * itens mais antigos (antes o cache de sessão era zerado inteiro a cada 500
+ * usuários, o que com muitas igrejas deixava-o sempre vazio).
+ * Observação: é por instância do servidor; em várias instâncias cada uma tem o seu.
+ */
+class CacheLimitado<V> {
+  private itens = new Map<string, { valor: V; at: number }>();
+  constructor(private max: number, private ttlMs: number) {}
+
+  get(chave: string): V | undefined {
+    const item = this.itens.get(chave);
+    if (!item) return undefined;
+    if (Date.now() - item.at >= this.ttlMs) {
+      this.itens.delete(chave);
+      return undefined;
+    }
+    return item.valor;
+  }
+
+  set(chave: string, valor: V) {
+    this.itens.delete(chave);
+    this.itens.set(chave, { valor, at: Date.now() });
+    while (this.itens.size > this.max) {
+      this.itens.delete(this.itens.keys().next().value as string);
+    }
+  }
+
+  deleteWhere(teste: (valor: V) => boolean) {
+    this.itens.forEach((item, chave) => {
+      if (teste(item.valor)) this.itens.delete(chave);
+    });
+  }
+}
 
 class HttpError extends Error {
   constructor(public status: number, message: string) {
@@ -91,23 +132,43 @@ function getAdminClient(): SupabaseClient {
 // Autenticação + permissão de tesouraria
 // ---------------------------------------------------------------------------
 
-const authCache = new Map<string, { membro: Membro; at: number }>();
+const authCache = new CacheLimitado<Membro>(AUTH_CACHE_MAX, AUTH_CACHE_TTL_MS);
+
+// Limite simples de requisições por usuário (protege o banco de loops e abusos).
+// Em várias instâncias o limite vale por instância; para limite global, usar Redis/Upstash.
+const contadorRequisicoes = new CacheLimitado<{ inicio: number; qtd: number }>(AUTH_CACHE_MAX, 60 * 1000);
+
+function verificarLimite(membroId: string) {
+  const agora = Date.now();
+  const atual = contadorRequisicoes.get(membroId);
+  if (!atual || agora - atual.inicio >= 60 * 1000) {
+    contadorRequisicoes.set(membroId, { inicio: agora, qtd: 1 });
+    return;
+  }
+  atual.qtd++;
+  if (atual.qtd > LIMITE_REQ_POR_MINUTO) {
+    throw new HttpError(429, 'Muitas requisições em pouco tempo. Aguarde um minuto e tente novamente.');
+  }
+}
+
+function invalidarSessoesDoMembro(membroId: string) {
+  authCache.deleteWhere((m) => m.id === membroId);
+}
 
 async function autenticar(req: NextRequest, supabase: SupabaseClient): Promise<Membro> {
   const header = req.headers.get('authorization') || '';
   const token = header.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : '';
   if (!token) throw new HttpError(401, 'Sessão ausente. Faça login novamente.');
 
-  const now = Date.now();
   const cached = authCache.get(token);
-  if (cached && now - cached.at < AUTH_CACHE_TTL_MS) return cached.membro;
+  if (cached) return cached;
 
   const { data: userData, error: userErr } = await supabase.auth.getUser(token);
   if (userErr || !userData?.user) throw new HttpError(401, 'Sessão expirada. Faça login novamente.');
 
   const { data: membro } = await supabase
     .from('membros')
-    .select('id, nome, igreja_id, acesso_ativo')
+    .select('id, nome, igreja_id, acesso_ativo, papel_id')
     .eq('auth_user_id', userData.user.id)
     .maybeSingle();
 
@@ -127,70 +188,128 @@ async function autenticar(req: NextRequest, supabase: SupabaseClient): Promise<M
     throw new HttpError(403, 'Usuário sem permissão de acesso à Tesouraria. Solicite a liberação à liderança da igreja.');
   }
 
-  const result: Membro = { id: String(membro.id), nome: String(membro.nome || ''), igreja_id: String(membro.igreja_id) };
-  if (authCache.size > 500) authCache.clear();
-  authCache.set(token, { membro: result, at: now });
+  const result: Membro = {
+    id: String(membro.id),
+    nome: String(membro.nome || ''),
+    igreja_id: String(membro.igreja_id),
+    podeGerenciarPermissoes: await temPermissaoAdmin(supabase, String(membro.id), membro.papel_id),
+  };
+  authCache.set(token, result);
   return result;
+}
+
+/**
+ * true se o membro tem church:admin ou permissions:manage pelo papel
+ * (papel_permissoes) ou por concessão individual (membro_permissoes).
+ * Uma linha individual com concedida = false revoga o que vem do papel.
+ */
+async function temPermissaoAdmin(supabase: SupabaseClient, membroId: string, papelId: string | null): Promise<boolean> {
+  const { data: codigos, error } = await supabase.from('permissoes').select('id').in('codigo', CODIGOS_ADMIN);
+  if (error || !codigos?.length) return false;
+  const ids = codigos.map((c: any) => c.id);
+
+  const [individual, doPapel] = await Promise.all([
+    supabase.from('membro_permissoes').select('permissao_id, concedida').eq('membro_id', membroId).in('permissao_id', ids),
+    papelId
+      ? supabase.from('papel_permissoes').select('permissao_id').eq('papel_id', papelId).in('permissao_id', ids)
+      : Promise.resolve({ data: [] as any[] }),
+  ]);
+
+  const revogadas = new Set((individual.data || []).filter((r: any) => r.concedida === false).map((r: any) => r.permissao_id));
+  const concedidas = [
+    ...(individual.data || []).filter((r: any) => r.concedida !== false).map((r: any) => r.permissao_id),
+    ...(doPapel.data || []).map((r: any) => r.permissao_id),
+  ];
+  return concedidas.some((id) => !revogadas.has(id));
+}
+
+function exigirAdmin(membro: Membro) {
+  if (!membro.podeGerenciarPermissoes) {
+    throw new HttpError(403, 'Apenas a liderança da igreja (administrador) pode gerenciar acessos à Tesouraria.');
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Utilitários de consulta
 // ---------------------------------------------------------------------------
 
-/** Busca todas as linhas de uma consulta, página por página (limite do Supabase: 1000 por vez). */
+/**
+ * Busca todas as linhas de uma consulta, página por página (limite do Supabase: 1000 por vez).
+ * Passando de MAX_ROWS, falha com erro claro em vez de devolver dados cortados
+ * (totais errados sem aviso são piores que um erro numa tesouraria).
+ */
 async function buscarTodos<T = any>(montarConsulta: () => any): Promise<T[]> {
   const out: T[] = [];
-  for (let from = 0; from < MAX_ROWS; from += PAGE_SIZE) {
+  for (let from = 0; ; from += PAGE_SIZE) {
     const { data, error } = await montarConsulta().range(from, from + PAGE_SIZE - 1);
     if (error) throw new HttpError(400, error.message);
     const rows = (data || []) as T[];
     out.push(...rows);
-    if (rows.length < PAGE_SIZE) break;
+    if (rows.length < PAGE_SIZE) return out;
+    if (out.length >= MAX_ROWS) {
+      throw new HttpError(
+        413,
+        `O período escolhido tem mais de ${MAX_ROWS.toLocaleString('pt-BR')} registros. Escolha um ano ou mês específico.`
+      );
+    }
   }
-  return out;
 }
 
-const unidadesCache = new Map<string, { map: Map<string, Unidade>; at: number }>();
-const membrosCache = new Map<string, { map: Map<string, string>; at: number }>();
+const unidadesCache = new CacheLimitado<Map<string, Unidade>>(CACHE_MAX_IGREJAS, CACHE_TTL_MS);
+const membrosCache = new CacheLimitado<Map<string, string>>(CACHE_MAX_IGREJAS, CACHE_TTL_MS);
+
+/**
+ * Nomes dos líderes por unidade, SOMENTE da igreja informada.
+ * unidade_lideres não tem igreja_id: o filtro é feito pelo join com unidades.
+ * Membros são paginados (o Supabase devolve no máx. 1000 linhas por consulta).
+ */
+async function carregarLideresPorUnidade(supabase: SupabaseClient, igrejaId: string) {
+  const [lideres, membros] = await Promise.all([
+    buscarTodos<any>(() =>
+      supabase
+        .from('unidade_lideres')
+        .select('id, unidade_id, pessoa_id, unidades!inner(igreja_id)')
+        .eq('ativo', true)
+        .eq('unidades.igreja_id', igrejaId)
+        .order('id')
+    ),
+    buscarTodos<any>(() =>
+      supabase.from('membros').select('id, nome, unidade_id, funcao').eq('igreja_id', igrejaId).order('id')
+    ),
+  ]);
+
+  const nomes = new Map<string, string>();
+  membros.forEach((m) => {
+    if (m.id && m.nome) nomes.set(String(m.id), String(m.nome).trim());
+  });
+
+  const porUnidade = new Map<string, string[]>();
+  const adicionar = (unidadeId: string, nome: string) => {
+    const lista = porUnidade.get(unidadeId) || [];
+    if (!lista.includes(nome)) lista.push(nome);
+    porUnidade.set(unidadeId, lista);
+  };
+  lideres.forEach((ul) => {
+    const nome = nomes.get(String(ul.pessoa_id));
+    if (nome) adicionar(String(ul.unidade_id), nome);
+  });
+  membros.forEach((m) => {
+    if (m.unidade_id && m.nome && String(m.funcao || '').toLowerCase().includes('lider')) {
+      adicionar(String(m.unidade_id), String(m.nome).trim());
+    }
+  });
+  return porUnidade;
+}
 
 async function getUnidadesMap(supabase: SupabaseClient, igrejaId: string) {
-  const c = unidadesCache.get(igrejaId);
-  if (c && Date.now() - c.at < CACHE_TTL_MS) return c.map;
-  const [rows, unidLideresRes, membrosRes] = await Promise.all([
+  const emCache = unidadesCache.get(igrejaId);
+  if (emCache) return emCache;
+  const [rows, lideresPorUnidade] = await Promise.all([
     buscarTodos<Unidade>(() =>
       supabase.from('unidades').select('id, nome, pai_id').eq('igreja_id', igrejaId).order('id')
     ),
-    supabase.from('unidade_lideres').select('unidade_id, pessoa_id, papel, ativo').eq('ativo', true),
-    supabase.from('membros').select('id, nome, unidade_id, funcao').eq('igreja_id', igrejaId),
+    carregarLideresPorUnidade(supabase, igrejaId),
   ]);
-
-  const membrosMap = new Map<string, string>();
-  (membrosRes.data || []).forEach((m: any) => {
-    if (m.id && m.nome) membrosMap.set(String(m.id), String(m.nome).trim());
-  });
-
-  const lideresPorUnidade = new Map<string, string[]>();
-  (unidLideresRes.data || []).forEach((ul: any) => {
-    const nome = membrosMap.get(String(ul.pessoa_id));
-    if (nome) {
-      const uId = String(ul.unidade_id);
-      if (!lideresPorUnidade.has(uId)) lideresPorUnidade.set(uId, []);
-      if (!lideresPorUnidade.get(uId)!.includes(nome)) {
-        lideresPorUnidade.get(uId)!.push(nome);
-      }
-    }
-  });
-
-  (membrosRes.data || []).forEach((m: any) => {
-    if (m.unidade_id && m.funcao && String(m.funcao).toLowerCase().includes('lider') && m.nome) {
-      const uId = String(m.unidade_id);
-      const nome = String(m.nome).trim();
-      if (!lideresPorUnidade.has(uId)) lideresPorUnidade.set(uId, []);
-      if (!lideresPorUnidade.get(uId)!.includes(nome)) {
-        lideresPorUnidade.get(uId)!.push(nome);
-      }
-    }
-  });
 
   const map = new Map<string, Unidade>();
   rows.forEach((u) => {
@@ -204,19 +323,19 @@ async function getUnidadesMap(supabase: SupabaseClient, igrejaId: string) {
   map.forEach((u) => {
     if (u.pai_id && map.has(String(u.pai_id))) u.setor_nome = map.get(String(u.pai_id))?.nome;
   });
-  unidadesCache.set(igrejaId, { map, at: Date.now() });
+  unidadesCache.set(igrejaId, map);
   return map;
 }
 
 async function getMembrosMap(supabase: SupabaseClient, igrejaId: string) {
-  const c = membrosCache.get(igrejaId);
-  if (c && Date.now() - c.at < CACHE_TTL_MS) return c.map;
+  const emCache = membrosCache.get(igrejaId);
+  if (emCache) return emCache;
   const rows = await buscarTodos<{ id: string; nome: string }>(() =>
     supabase.from('membros').select('id, nome').eq('igreja_id', igrejaId).order('id')
   );
   const map = new Map<string, string>();
   rows.forEach((m) => map.set(String(m.id), String(m.nome)));
-  membrosCache.set(igrejaId, { map, at: Date.now() });
+  membrosCache.set(igrejaId, map);
   return map;
 }
 
@@ -255,21 +374,22 @@ function anoMesDoItem(dataRelatorio: any) {
   return { ano, mes };
 }
 
-function resolverSetor(u: Unidade | null | undefined, nomeCelula: string, observacao: any) {
-  let setor = u?.setor_nome;
-  if (!setor || setor === 'Safira') {
-    const cNorm = String(nomeCelula || '').toLowerCase().trim();
-    if (MAPA_CELULAS_SETORES[cNorm]) {
-      setor = MAPA_CELULAS_SETORES[cNorm];
-    } else {
-      const obs = String(observacao || '');
-      if (obs.toLowerCase().includes('setor:')) {
-        const match = obs.match(/setor:\s*([^|]+)/i);
-        if (match) setor = match[1].trim();
-      }
-    }
-  }
-  return setor || 'Safira';
+/** Setor = unidade pai da célula (cadastro da própria igreja). Sem pai: tenta a observação. */
+function resolverSetor(u: Unidade | null | undefined, observacao: any) {
+  if (u?.setor_nome) return u.setor_nome;
+  const match = String(observacao || '').match(/setor:\s*([^|]+)/i);
+  return match ? match[1].trim() : SEM_SETOR;
+}
+
+/** Setores da igreja: unidades pai das unidades da ponta (células). */
+function setoresDaIgreja(unidades: Map<string, Unidade>): string[] {
+  const pais = new Set<string>();
+  unidades.forEach((u) => u.pai_id && pais.add(String(u.pai_id)));
+  const setores = new Set<string>();
+  unidades.forEach((u) => {
+    if (!pais.has(String(u.id)) && u.setor_nome) setores.add(u.setor_nome);
+  });
+  return Array.from(setores).sort((a, b) => a.localeCompare(b, 'pt-BR'));
 }
 
 /** Lê os relatórios da igreja no período (filtro no banco) e já monta as linhas da tela. */
@@ -293,7 +413,7 @@ async function carregarRelatorios(
         .order('id', { ascending: true });
       if (inicio) q = q.gte('data_relatorio', inicio);
       if (fim) q = q.lt('data_relatorio', fim);
-      if (somentePendentes === true) q = q.or('tesouraria_recebido.eq.false,tesouraria_recebido.is.null');
+      if (somentePendentes === true) q = q.or(FILTRO_PENDENTE);
       else if (somentePendentes === false) q = q.eq('tesouraria_recebido', true);
       return q;
     }),
@@ -310,7 +430,7 @@ async function carregarRelatorios(
     const l = converterItemParaLancamento(item, idx);
     const uInfo = item.unidade_id ? unidadesMap.get(String(item.unidade_id)) : null;
     const nomeCelula = uInfo?.nome || l.celulaNome || `Célula #${idx + 1}`;
-    const setor = resolverSetor(uInfo, nomeCelula, item.observacao);
+    const setor = resolverSetor(uInfo, item.observacao);
     if (setorFiltro && setor.toLowerCase() !== setorFiltro) return;
 
     lista.push({
@@ -335,11 +455,11 @@ async function carregarRelatorios(
   return lista;
 }
 
-function resumir(lista: any[]) {
+function resumir(lista: any[], setoresBase: string[]) {
   let pendentes = 0;
   let confirmados = 0;
   const setores = new Map<string, number>();
-  SETORES_PADRAO.forEach((s) => setores.set(s, 0));
+  setoresBase.forEach((s) => setores.set(s, 0));
   lista.forEach((r) => {
     if (r.tesouraria_recebido) {
       confirmados++;
@@ -352,6 +472,66 @@ function resumir(lista: any[]) {
     resumo: { pendentes, confirmados },
     setores: Array.from(setores.entries()).map(([nome, qtd]) => ({ setor_id: nome, setor_nome: nome, qtd_pendentes: qtd })),
   };
+}
+
+type AgregadoDashboard = {
+  ano: number;
+  mes: number;
+  setor: string;
+  enviados: number;
+  validados: number;
+  pix_validado: number;
+  especie_validado: number;
+};
+
+// Função SQL opcional (supabase/migrations/..._tesouraria_dashboard_resumo.sql).
+// Se não estiver instalada, guarda isso por 10 min e soma no próprio servidor.
+let rpcDashboardIndisponivelAte = 0;
+
+async function resumoDashboard(supabase: SupabaseClient, igrejaId: string, ano: any): Promise<AgregadoDashboard[]> {
+  const { todosAnos, pAno } = resolverPeriodo(ano, null);
+  const anoParam = todosAnos ? null : pAno;
+
+  if (Date.now() >= rpcDashboardIndisponivelAte) {
+    const { data, error } = await supabase.rpc('tesouraria_dashboard_resumo', { p_igreja_id: igrejaId, p_ano: anoParam });
+    if (!error) {
+      return (data || []).map((r: any) => ({
+        ano: Number(r.ano),
+        mes: Number(r.mes),
+        setor: String(r.setor || SEM_SETOR),
+        enviados: Number(r.enviados) || 0,
+        validados: Number(r.validados) || 0,
+        pix_validado: Number(r.pix_validado) || 0,
+        especie_validado: Number(r.especie_validado) || 0,
+      }));
+    }
+    const funcaoAusente = error.code === 'PGRST202' || error.code === '42883';
+    if (!funcaoAusente) throw new HttpError(400, error.message);
+    rpcDashboardIndisponivelAte = Date.now() + 10 * 60 * 1000;
+  }
+
+  // Alternativa sem a função SQL: mesmos totais calculados aqui (em centavos)
+  const relatorios = await carregarRelatorios(supabase, igrejaId, { ano: anoParam ?? 'todos' });
+  const grupos = new Map<string, AgregadoDashboard & { pixCent: number; espCent: number }>();
+  relatorios.forEach((r) => {
+    const chave = `${r.ano}|${r.mes}|${r.setor}`;
+    const g = grupos.get(chave) || {
+      ano: r.ano, mes: r.mes, setor: r.setor, enviados: 0, validados: 0,
+      pix_validado: 0, especie_validado: 0, pixCent: 0, espCent: 0,
+    };
+    g.enviados++;
+    if (r.tesouraria_recebido) {
+      g.validados++;
+      g.pixCent += Math.round(r.valor_pix * 100);
+      g.espCent += Math.round(r.valor_especie * 100);
+    }
+    grupos.set(chave, g);
+  });
+  return Array.from(grupos.values()).map(({ pixCent, espCent, ...g }) => ({
+    ...g,
+    pix_validado: pixCent / 100,
+    especie_validado: espCent / 100,
+  }));
 }
 
 function validarId(id: any): string {
@@ -370,62 +550,76 @@ export async function POST(req: NextRequest) {
     const { action, params = {} } = body || {};
     const supabase = getAdminClient();
     const membro = await autenticar(req, supabase);
+    verificarLimite(membro.id);
     const igrejaId = membro.igreja_id;
 
     switch (action) {
+      // Dados da sessão para a interface (ex.: mostrar ou não a tela de Permissões)
+      case 'minha_sessao': {
+        // Primeiro ano com relatórios (usa o índice igreja_id + data_relatorio)
+        const { data: primeiro } = await supabase
+          .from('relatorios_semanais')
+          .select('data_relatorio')
+          .eq('igreja_id', igrejaId)
+          .not('data_relatorio', 'is', null)
+          .order('data_relatorio', { ascending: true })
+          .limit(1)
+          .maybeSingle();
+        const primeiroAno = primeiro?.data_relatorio ? Number(String(primeiro.data_relatorio).slice(0, 4)) : null;
+        return NextResponse.json({
+          success: true,
+          data: {
+            id: membro.id,
+            nome: membro.nome,
+            igreja_id: igrejaId,
+            podeGerenciarPermissoes: membro.podeGerenciarPermissoes,
+            primeiroAno,
+          },
+        });
+      }
+
       // Tudo que a tela "Validar Relatórios" precisa, em UMA consulta por período
       case 'painel_validacao': {
-        const relatorios = await carregarRelatorios(supabase, igrejaId, { ano: params.ano, mes: params.mes });
-        const { resumo, setores } = resumir(relatorios);
+        const [relatorios, unidades] = await Promise.all([
+          carregarRelatorios(supabase, igrejaId, { ano: params.ano, mes: params.mes }),
+          getUnidadesMap(supabase, igrejaId),
+        ]);
+        const { resumo, setores } = resumir(relatorios, setoresDaIgreja(unidades));
         return NextResponse.json({ success: true, data: { resumo, setores, relatorios } });
       }
 
+      // Totais por (ano, mês, setor) para o Dashboard: ~100 linhas por ano em vez de milhares
+      case 'dashboard_resumo': {
+        const data = await resumoDashboard(supabase, igrejaId, params.ano);
+        return NextResponse.json({ success: true, data });
+      }
+
       case 'listar_unidades': {
-        const igrejaAlvo = params.igreja_id || igrejaId || 'ff600f5f-b91f-4826-bde2-3976e718877c';
-        const [rows, unidLideresRes, membrosRes] = await Promise.all([
+        // Sempre a igreja da sessão: nunca aceitar igreja_id vindo do navegador
+        const [rows, lideresPorUnidade] = await Promise.all([
           buscarTodos<any>(() =>
             supabase
               .from('unidades')
               .select('id, nome, pai_id, ativo, nivel_tipo_id, igreja_id, dia_semana')
-              .eq('igreja_id', igrejaAlvo)
+              .eq('igreja_id', igrejaId)
               .order('nome', { ascending: true })
+              .order('id', { ascending: true })
           ),
-          supabase.from('unidade_lideres').select('unidade_id, pessoa_id, papel, ativo').eq('ativo', true),
-          supabase.from('membros').select('id, nome, unidade_id, funcao').eq('igreja_id', igrejaAlvo),
+          carregarLideresPorUnidade(supabase, igrejaId),
         ]);
 
-        const membrosMap = new Map<string, string>();
-        (membrosRes.data || []).forEach((m: any) => {
-          if (m.id && m.nome) membrosMap.set(String(m.id), String(m.nome).trim());
-        });
-
-        const lideresPorUnidade = new Map<string, string[]>();
-        (unidLideresRes.data || []).forEach((ul: any) => {
-          const nome = membrosMap.get(String(ul.pessoa_id));
-          if (nome) {
-            const uId = String(ul.unidade_id);
-            if (!lideresPorUnidade.has(uId)) lideresPorUnidade.set(uId, []);
-            if (!lideresPorUnidade.get(uId)!.includes(nome)) {
-              lideresPorUnidade.get(uId)!.push(nome);
-            }
-          }
-        });
-
-        (membrosRes.data || []).forEach((m: any) => {
-          if (m.unidade_id && m.funcao && String(m.funcao).toLowerCase().includes('lider') && m.nome) {
-            const uId = String(m.unidade_id);
-            const nome = String(m.nome).trim();
-            if (!lideresPorUnidade.has(uId)) lideresPorUnidade.set(uId, []);
-            if (!lideresPorUnidade.get(uId)!.includes(nome)) {
-              lideresPorUnidade.get(uId)!.push(nome);
-            }
-          }
-        });
+        // Nível "célula" de cada igreja = o nivel_tipo de maior ordem (sem id fixo no código)
+        const { data: niveis } = await supabase.from('nivel_tipo').select('id, ordem').eq('igreja_id', igrejaId);
+        const nivelCelula = (niveis || []).reduce<{ id: string; ordem: number } | null>(
+          (maior, n: any) => (!maior || Number(n.ordem) > maior.ordem ? { id: String(n.id), ordem: Number(n.ordem) } : maior),
+          null
+        );
 
         const data = rows.map((u: any) => {
           const lids = lideresPorUnidade.get(String(u.id)) || [];
           return {
             ...u,
+            eh_celula: nivelCelula && u.nivel_tipo_id ? String(u.nivel_tipo_id) === nivelCelula.id : null,
             lideres: lids,
             lider_nome: lids.join(', ') || null,
           };
@@ -435,6 +629,7 @@ export async function POST(req: NextRequest) {
       }
 
       case 'listar_permissoes': {
+        exigirAdmin(membro);
         const { data: permissoes, error: permError } = await supabase
           .from('tesouraria_permissao')
           .select('*')
@@ -473,6 +668,7 @@ export async function POST(req: NextRequest) {
       }
 
       case 'buscar_membros': {
+        exigirAdmin(membro);
         const busca = String(params.busca || '').trim();
         let q = supabase
           .from('membros')
@@ -482,7 +678,8 @@ export async function POST(req: NextRequest) {
           .limit(40);
 
         if (busca) {
-          q = q.ilike('nome', `%${busca}%`);
+          // Escapa curingas do LIKE: "%" e "_" digitados são buscados literalmente
+          q = q.ilike('nome', `%${busca.replace(/[\\%_]/g, (c) => `\\${c}`)}%`);
         }
 
         const { data, error } = await q;
@@ -491,8 +688,18 @@ export async function POST(req: NextRequest) {
       }
 
       case 'adicionar_permissao': {
+        exigirAdmin(membro);
         const membroId = String(params.membro_id || '').trim();
-        if (!membroId) throw new HttpError(400, 'membro_id é obrigatório.');
+        if (!UUID_RE.test(membroId)) throw new HttpError(400, 'membro_id inválido.');
+
+        // Só membros ativos da própria igreja podem receber acesso
+        const { data: alvo } = await supabase
+          .from('membros')
+          .select('id')
+          .eq('id', membroId)
+          .eq('igreja_id', igrejaId)
+          .maybeSingle();
+        if (!alvo) throw new HttpError(404, 'Membro não encontrado nesta igreja.');
 
         const { data: existente } = await supabase
           .from('tesouraria_permissao')
@@ -522,7 +729,11 @@ export async function POST(req: NextRequest) {
         const id = params.id ? String(params.id).trim() : null;
         const membroId = params.membro_id ? String(params.membro_id).trim() : null;
 
+        exigirAdmin(membro);
         if (!id && !membroId) throw new HttpError(400, 'ID ou membro_id é obrigatório para remover permissão.');
+        if (membroId === membro.id) {
+          throw new HttpError(400, 'Você não pode remover o seu próprio acesso.');
+        }
 
         let q = supabase.from('tesouraria_permissao').delete().eq('igreja_id', igrejaId);
         if (id) {
@@ -531,8 +742,14 @@ export async function POST(req: NextRequest) {
           q = q.eq('membro_id', membroId);
         }
 
-        const { error } = await q;
+        // Não permite remover o próprio acesso pelo id da linha
+        q = q.neq('membro_id', membro.id);
+
+        const { data: removidos, error } = await q.select('membro_id');
         if (error) throw new HttpError(400, error.message);
+        if (!removidos?.length) throw new HttpError(404, 'Permissão não encontrada (ou é o seu próprio acesso).');
+        // Quem perdeu o acesso não continua entrando pelo cache de sessão
+        removidos.forEach((r: any) => invalidarSessoesDoMembro(String(r.membro_id)));
         return NextResponse.json({ success: true });
       }
 
@@ -541,24 +758,12 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ success: true, data });
       }
 
-      case 'resumo': {
-        const { resumo } = resumir(await carregarRelatorios(supabase, igrejaId, { ano: params.ano, mes: params.mes }));
-        return NextResponse.json({ success: true, data: resumo });
-      }
-
-      case 'setores_pendencias': {
-        const { setores } = resumir(
-          await carregarRelatorios(supabase, igrejaId, { ano: params.ano, mes: params.mes, somentePendentes: true })
-        );
-        return NextResponse.json({ success: true, data: setores });
-      }
-
       case 'confirmar_individual':
       case 'desconfirmar_individual': {
         const id = validarId(params.id);
         const nowIso = new Date().toISOString();
         const confirmar = action === 'confirmar_individual';
-        const { data, error } = await supabase
+        let q = supabase
           .from('relatorios_semanais')
           .update({
             tesouraria_recebido: confirmar,
@@ -567,10 +772,26 @@ export async function POST(req: NextRequest) {
             atualizado_em: nowIso,
           })
           .eq('id', id)
-          .eq('igreja_id', igrejaId)
-          .select('id');
+          .eq('igreja_id', igrejaId);
+        // Só muda quem ainda está no estado oposto: dois tesoureiros validando ao mesmo
+        // tempo não sobrescrevem quem validou primeiro (nem a data do recebimento)
+        q = confirmar ? q.or(FILTRO_PENDENTE) : q.eq('tesouraria_recebido', true);
+        const { data, error } = await q.select('id');
         if (error) throw new HttpError(400, error.message);
-        if (!data?.length) throw new HttpError(404, 'Relatório não encontrado nesta igreja.');
+        if (!data?.length) {
+          const { data: existe } = await supabase
+            .from('relatorios_semanais')
+            .select('id')
+            .eq('id', id)
+            .eq('igreja_id', igrejaId)
+            .maybeSingle();
+          if (!existe) throw new HttpError(404, 'Relatório não encontrado nesta igreja.');
+          // Já estava no estado pedido (outra pessoa fez antes): nada a alterar
+          return NextResponse.json({
+            success: true,
+            message: confirmar ? 'Este relatório já havia sido validado.' : 'Este relatório já estava pendente.',
+          });
+        }
         return NextResponse.json({ success: true });
       }
 
@@ -579,19 +800,25 @@ export async function POST(req: NextRequest) {
         if (ids.length === 0) return NextResponse.json({ success: true, count: 0 });
         if (ids.length > 1000) throw new HttpError(400, 'Selecione no máximo 1000 relatórios por vez.');
         const nowIso = new Date().toISOString();
-        const { data, error } = await supabase
-          .from('relatorios_semanais')
-          .update({
-            tesouraria_recebido: true,
-            data_recebimento: nowIso,
-            tesoureiro_id: membro.id,
-            atualizado_em: nowIso,
-          })
-          .in('id', ids)
-          .eq('igreja_id', igrejaId)
-          .select('id');
-        if (error) throw new HttpError(400, error.message);
-        return NextResponse.json({ success: true, count: data?.length || 0 });
+        // Em lotes: 1000 ids numa só URL passariam do limite de tamanho da requisição
+        let count = 0;
+        for (let i = 0; i < ids.length; i += 150) {
+          const { data, error } = await supabase
+            .from('relatorios_semanais')
+            .update({
+              tesouraria_recebido: true,
+              data_recebimento: nowIso,
+              tesoureiro_id: membro.id,
+              atualizado_em: nowIso,
+            })
+            .in('id', ids.slice(i, i + 150))
+            .eq('igreja_id', igrejaId)
+            .or(FILTRO_PENDENTE) // não sobrescreve quem já validou
+            .select('id');
+          if (error) throw new HttpError(400, error.message);
+          count += data?.length || 0;
+        }
+        return NextResponse.json({ success: true, count });
       }
 
       case 'atualizar_valores': {

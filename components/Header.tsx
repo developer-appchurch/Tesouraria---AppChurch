@@ -8,6 +8,8 @@ interface HeaderProps {
   currentView: ViewMode;
   anoSelecionado: number | string;
   onSelectAno: (ano: number | string) => void;
+  /** Anos com relatórios na igreja (do primeiro até o atual), vindos do servidor */
+  anosBase?: number[];
   lancamentos?: LancamentoTesouraria[];
   onRefresh: () => void;
   isRefreshing: boolean;
@@ -35,18 +37,6 @@ const MESES_HEADER = [
   { valor: '12', label: 'Dezembro' },
 ];
 
-const SETORES_PADRAO = [
-  'Safira',
-  'Fire',
-  'White',
-  'Azul',
-  'Amarelo',
-  'Black',
-  'Diamante',
-  'Legacy',
-  'Onix',
-  'Titanium',
-];
 
 export const Header: React.FC<HeaderProps> = ({
   currentView,
@@ -61,10 +51,12 @@ export const Header: React.FC<HeaderProps> = ({
   setorSelecionado,
   onSelectSetor,
   setoresDisponiveis = [],
+  anosBase = [],
   onShowToast,
 }) => {
   const anosDisponiveis = useMemo(() => {
     const anosSet = new Set<number>();
+    anosBase.forEach((a) => anosSet.add(a));
     lancamentos.forEach((l) => {
       let a = l.ano;
       if (!a && l.dataBR) {
@@ -86,7 +78,7 @@ export const Header: React.FC<HeaderProps> = ({
       anosSet.add(new Date().getFullYear());
     }
     return Array.from(anosSet).sort((a, b) => b - a);
-  }, [lancamentos]);
+  }, [lancamentos, anosBase]);
 
   // Se for o ano atual, exibe apenas até o mês mais recente (mês atual)
   const mesesDisponiveis = useMemo(() => {
@@ -108,8 +100,7 @@ export const Header: React.FC<HeaderProps> = ({
 
   // Lista de setores válidos (sem a opção "todos")
   const listaSetores = useMemo(() => {
-    const base = setoresDisponiveis.length > 0 ? setoresDisponiveis : SETORES_PADRAO;
-    return base.filter(
+    return setoresDisponiveis.filter(
       (s) => s && s.toLowerCase() !== 'todos' && s.toLowerCase() !== 'todos os setores'
     );
   }, [setoresDisponiveis]);
@@ -236,7 +227,7 @@ export const Header: React.FC<HeaderProps> = ({
                   <select
                     value={
                       !setorSelecionado || setorSelecionado.toLowerCase() === 'todos' || setorSelecionado.toLowerCase() === 'todos os setores'
-                        ? listaSetores[0] || 'Safira'
+                        ? listaSetores[0] || ''
                         : setorSelecionado
                     }
                     onChange={(e) => onSelectSetor(e.target.value)}

@@ -30,3 +30,13 @@ export function formatBRL(val: number): string {
   parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, '.');
   return `R$ ${parts.join(',')}`;
 }
+
+/**
+ * Soma valores em reais sem erro de ponto flutuante: soma em centavos inteiros
+ * (ex.: 0.1 + 0.2 = 0.30000000000000004 em número comum).
+ */
+export function somarReais<T>(itens: T[], valor: (item: T) => number | null | undefined): number {
+  let centavos = 0;
+  for (const item of itens) centavos += Math.round(Number(valor(item) ?? 0) * 100) || 0;
+  return centavos / 100;
+}

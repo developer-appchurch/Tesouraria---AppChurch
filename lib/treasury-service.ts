@@ -1,10 +1,8 @@
 import { getSupabaseClient } from './supabase';
-import { LancamentoTesouraria, PermissaoUsuario, AppChurchUser, MembroItem, UnidadeCadastrada, TesourariaPermissaoItem, MembroBuscaItem } from './types';
-import { LISTA_CELULAS } from './celulas-data';
+import { LancamentoTesouraria, AgregadoDashboard, AppChurchUser, MembroItem, UnidadeCadastrada, TesourariaPermissaoItem, MembroBuscaItem } from './types';
 
 // In-memory cache for high performance and reduced query consumption
 let memoryLancamentos: LancamentoTesouraria[] | null = null;
-let memoryPermissoes: PermissaoUsuario[] | null = null;
 let lastLancamentosFetch = 0;
 // Cache de relatórios por período ("ano|mes"): trocar de ano não devolve dados de outro ano
 const relatoriosCache = new Map<string, { data: LancamentoTesouraria[]; at: number }>();
@@ -19,17 +17,25 @@ function chavePeriodo(ano: number | string, mes?: number | string | null): strin
 
 /** Depois de validar/editar/excluir: mantém só o período atual (já atualizado) e descarta os demais. */
 function sincronizarCacheRelatorios() {
+  dashboardCache.clear();
   relatoriosCache.clear();
   if (memoryLancamentos && chaveLancamentosAtual) {
     relatoriosCache.set(chaveLancamentosAtual, { data: memoryLancamentos, at: lastLancamentosFetch });
   }
 }
-let lastPermissoesFetch = 0;
 let memoryUnidades: UnidadeCadastrada[] | null = null;
+// Totais do Dashboard por ano ("todos" = todos os anos)
+const dashboardCache = new Map<string, { data: AgregadoDashboard[]; at: number }>();
 let lastUnidadesFetch = 0;
 const CACHE_TTL_MS = 3 * 60 * 1000; // 3 minutes cache (no polling)
 
-const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Caches mantidos fora do serviço (ex.: telas) se registram aqui para serem
+// limpos junto com os do serviço no login/logout: dados de uma igreja nunca
+// podem aparecer para o próximo usuário do mesmo navegador.
+const limpadoresDeCache = new Set<() => void>();
+export function registrarLimpezaDeCache(limpar: () => void): void {
+  limpadoresDeCache.add(limpar);
+}
 
 export function formatarDataBR(val: any): string {
   if (!val) return '-';
@@ -43,18 +49,8 @@ export function formatarDataBR(val: any): string {
   return str;
 }
 
-export const MAPA_CELULAS_SETORES: Record<string, string> = {
-  'maranata': 'Safira', 'nazireu': 'Safira', 'cordeirinhos kids': 'Safira', 'metanoia': 'Safira', 'efratá': 'Safira', 'tetelestai': 'Safira',
-  'frutifera': 'Fire', 'ekklesia': 'Fire', 'jeová jireh': 'Fire', 'elohim': 'Fire', 'huiós': 'Fire', 'adonai': 'Fire', 'barukids': 'Fire', 'baruk': 'Fire', 'brotinhos kids': 'Fire', 'efraim': 'Fire',
-  'qahal kids': 'White', 'éden': 'White', 'dunamis': 'White', 'lírios': 'White', 'qahal': 'White', 'boas novas': 'White', 'holy spirit': 'White', 'naham': 'White', 'zion': 'White', 'áquila kids': 'White', 'revolution': 'White', 'be one': 'White', 'oliveiras': 'White', 'áquila': 'White', 'videira': 'White',
-  'mel kids': 'Titanium', 'rafá': 'Titanium', 'betel': 'Titanium', 'ágape': 'Titanium',
-  'ekballo': 'Legacy', 'galileu': 'Legacy', 'yeshua': 'Legacy', 'jesus people': 'Legacy',
-  'zoe kids': 'Black', 'avivah': 'Black', 'hope': 'Black', 'new mindinhos': 'Black', 'filipenses 4:8': 'Black', 'zoe': 'Black', 'filikids': 'Black', 'atos 29': 'Black', 'new mind': 'Black', 'hope kids': 'Black',
-  'razak': 'Diamante', 'kairós': 'Diamante', 'gideões': 'Diamante', 'hineni': 'Diamante', 'aba pai': 'Diamante', 'hágios': 'Diamante', 'kairós kids': 'Diamante',
-  'rei davi': 'Onix', 'kadosh': 'Onix', 'emaús': 'Onix', 'renovo': 'Onix',
-  'geração joão batista': 'Amarelo', 'herdeiros kids': 'Amarelo', 'nova geração eleita': 'Amarelo', 'geração hur kids': 'Amarelo', 'herdeiros da glória': 'Amarelo', 'geração hur': 'Amarelo',
-  'life kids': 'Azul', 'geração eleita kids': 'Azul', 'geração eleita': 'Azul', 'sal e luz': 'Azul', 'revigora': 'Azul', 'life': 'Azul', 'new life': 'Azul', 'revigora kids': 'Azul', 'cordeiro de deus': 'Azul', 'nações': 'Azul'
-};
+/** Rótulo para relatório cuja célula não está ligada a um setor no cadastro. */
+export const SEM_SETOR = 'Sem setor';
 
 export function converterItemParaLancamento(item: any, idx = 0): LancamentoTesouraria {
   const id = String(item.id || item.ID || item.Id || `rel-${Date.now()}-${idx}`);
@@ -148,7 +144,7 @@ export function converterItemParaLancamento(item: any, idx = 0): LancamentoTesou
     ? formatarDataBR(item.data_recebimento) 
     : (item.DATA_TESOURARIA || (isConfirmado ? dataBR : undefined));
 
-  const idTesoureiro = item.tesoureiro_id || item.ID_TESOUREIRO || (isConfirmado ? '4' : undefined);
+  const idTesoureiro = item.tesoureiro_id || item.ID_TESOUREIRO || undefined;
 
   // Parse celula, setor, and lider from item or observacao
   let celulaNome = '';
@@ -188,21 +184,6 @@ export function converterItemParaLancamento(item: any, idx = 0): LancamentoTesou
     ).trim();
   }
 
-  // Cross-reference with LISTA_CELULAS if cell is matched
-  if (celulaNome) {
-    const norm = celulaNome.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-    const matched = LISTA_CELULAS.find((c) => {
-      const cNorm = c.nome.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-      return norm.includes(cNorm) || cNorm.includes(norm);
-    });
-    if (matched) {
-      celulaNome = matched.nome;
-      if (!setor) setor = matched.setor;
-      if (!liderCelula) liderCelula = matched.lider;
-      if (!area) area = matched.area;
-    }
-  }
-
   // Fallback if empty in database
   if (!celulaNome) {
     celulaNome = `Célula #${idx + 1}`;
@@ -210,38 +191,19 @@ export function converterItemParaLancamento(item: any, idx = 0): LancamentoTesou
 
   if (item.setor || item.setor_nome || item.Setor) {
     setor = String(item.setor || item.setor_nome || item.Setor).trim();
-  } else if (celulaNome) {
-    const cNorm = celulaNome.toLowerCase().trim();
-    if (MAPA_CELULAS_SETORES[cNorm]) {
-      setor = MAPA_CELULAS_SETORES[cNorm];
-    }
   }
 
   if (!setor || setor === '-' || setor === 'undefined') {
-    setor = 'Safira';
+    setor = SEM_SETOR;
   }
 
   if (!liderCelula) liderCelula = String(item.lider || item.LiderCelula || item.responsavel_envio || '-').trim();
 
-  // Resolve the validator name accurately from idTesoureiro
+  // Nome de quem validou: vem do servidor (membros.nome do tesoureiro_id)
   let nomeTesoureiro: string | undefined = undefined;
   if (isConfirmado) {
     const rawNome = item.NomeTesoureiro || item.nome_tesoureiro;
-    if (rawNome && String(rawNome).toLowerCase() !== 'tesouraria') {
-      nomeTesoureiro = String(rawNome).trim();
-    } else {
-      const sId = String(idTesoureiro || '').trim().toLowerCase();
-      if (sId === '4' || sId === 'junio' || sId === 'jfonteles') {
-        nomeTesoureiro = 'Junio Fonteles';
-      } else if (sId.includes('developer')) {
-        nomeTesoureiro = 'Developer AppChurch';
-      } else if (sId === '1' || sId === 'admin') {
-        nomeTesoureiro = 'Administrador Geral';
-      } else {
-        const found = memoryPermissoes?.find((p) => p.id === sId || p.user_id === sId);
-        nomeTesoureiro = found ? found.nome : 'Tesoureiro';
-      }
-    }
+    nomeTesoureiro = rawNome ? String(rawNome).trim() : 'Tesoureiro';
   }
 
   const numSemanaFinal = item.numero_semana !== undefined && item.numero_semana !== null
@@ -356,11 +318,11 @@ export const TreasuryService = {
     memoryLancamentos = null;
     relatoriosCache.clear();
     chaveLancamentosAtual = null;
-    memoryPermissoes = null;
     memoryUnidades = null;
+    dashboardCache.clear();
     lastLancamentosFetch = 0;
-    lastPermissoesFetch = 0;
     lastUnidadesFetch = 0;
+    limpadoresDeCache.forEach((limpar) => limpar());
   },
 
   /**
@@ -521,6 +483,19 @@ export const TreasuryService = {
   },
 
   /**
+   * Permissões da sessão atual, decididas pelo servidor (ex.: se pode gerenciar acessos).
+   */
+  async fetchMinhaSessao(): Promise<{ podeGerenciarPermissoes: boolean; primeiroAno: number | null } | null> {
+    const res = await callTreasuryApi<{ podeGerenciarPermissoes: boolean; primeiroAno: number | null }>('minha_sessao');
+    if (!res.success || !res.data) return null;
+    const primeiroAno = Number(res.data.primeiroAno);
+    return {
+      podeGerenciarPermissoes: res.data.podeGerenciarPermissoes === true,
+      primeiroAno: Number.isFinite(primeiroAno) && primeiroAno > 2000 ? primeiroAno : null,
+    };
+  },
+
+  /**
    * Obtém relatórios semanais da própria igreja via API
    * Utiliza cache em memória por período para evitar requisições frequentes ao Supabase
    */
@@ -553,6 +528,25 @@ export const TreasuryService = {
   },
 
   /**
+   * Totais do Dashboard já somados no servidor: uma linha por (ano, mês, setor).
+   */
+  async fetchDashboardResumo(
+    ano: number | string,
+    forceRefresh = false
+  ): Promise<{ data: AgregadoDashboard[]; error?: string; isAuthError?: boolean }> {
+    const chave = chavePeriodo(ano);
+    const emCache = dashboardCache.get(chave);
+    if (!forceRefresh && emCache && Date.now() - emCache.at < CACHE_TTL_MS) return { data: emCache.data };
+
+    const res = await callTreasuryApi<AgregadoDashboard[]>('dashboard_resumo', { ano });
+    if (res.success && Array.isArray(res.data)) {
+      dashboardCache.set(chave, { data: res.data, at: Date.now() });
+      return { data: res.data };
+    }
+    return { data: emCache?.data || [], error: res.error, isAuthError: res.authError };
+  },
+
+  /**
    * Tudo que a tela "Validar Relatórios" precisa (resumo, pendências por setor e
    * relatórios) em UMA chamada por período.
    */
@@ -565,54 +559,6 @@ export const TreasuryService = {
       return { success: true, data: apiRes.data };
     }
     return { success: false, error: apiRes.error, isAuthError: apiRes.authError };
-  },
-
-  /**
-   * Pendências por setor no período (via /api/treasury)
-   */
-  async rpcTesourariaSetoresPendencias(
-    ano: number | string,
-    mes?: number | string | null
-  ): Promise<{
-    success: boolean;
-    data: { setor_id: string; setor_nome: string; qtd_pendentes: number }[];
-    error?: string;
-    isAuthError?: boolean;
-  }> {
-    const apiRes = await callTreasuryApi<any[]>('setores_pendencias', { ano, mes });
-    if (apiRes.success && Array.isArray(apiRes.data)) return { success: true, data: apiRes.data };
-    return { success: false, data: [], error: apiRes.error, isAuthError: apiRes.authError };
-  },
-
-  /**
-   * Relatórios detalhados do período (via /api/treasury)
-   */
-  async rpcTesourariaRelatoriosDetalhados(
-    ano: number | string,
-    mes?: number | string | null,
-    setorId?: string | null,
-    somentePendentes?: boolean | null
-  ): Promise<{ success: boolean; data: any[]; error?: string; isAuthError?: boolean }> {
-    const apiRes = await callTreasuryApi<any[]>('relatorios_detalhados', { ano, mes, setorId, somentePendentes });
-    if (apiRes.success && Array.isArray(apiRes.data)) return { success: true, data: apiRes.data };
-    return { success: false, data: [], error: apiRes.error, isAuthError: apiRes.authError };
-  },
-
-  /**
-   * Contadores do topo da tela: { pendentes, confirmados } (via /api/treasury)
-   */
-  async rpcTesourariaResumo(
-    ano: number | string,
-    mes?: number | string | null
-  ): Promise<{
-    success: boolean;
-    data: { pendentes: number; confirmados: number };
-    error?: string;
-    isAuthError?: boolean;
-  }> {
-    const apiRes = await callTreasuryApi<{ pendentes: number; confirmados: number }>('resumo', { ano, mes });
-    if (apiRes.success && apiRes.data) return { success: true, data: apiRes.data };
-    return { success: false, data: { pendentes: 0, confirmados: 0 }, error: apiRes.error, isAuthError: apiRes.authError };
   },
 
   /**
@@ -643,43 +589,11 @@ export const TreasuryService = {
       dia_semana: u.dia_semana ? String(u.dia_semana).trim() : null,
       lideres: Array.isArray(u.lideres) ? u.lideres : [],
       lider_nome: u.lider_nome ? String(u.lider_nome).trim() : null,
+      eh_celula: typeof u.eh_celula === 'boolean' ? u.eh_celula : null,
     }));
     memoryUnidades = lista;
     lastUnidadesFetch = now;
     return lista;
-  },
-
-  /**
-   * Obtém setores / unidades cadastrados para a igreja na tabela 'unidades'
-   */
-  async fetchUnidades(
-    igrejaId?: string | number
-  ): Promise<{ success: boolean; data: string[]; error?: string }> {
-    try {
-      const supabase = getSupabaseClient();
-      // Só as colunas usadas (nunca select('*'): evita trazer fotos e campos pesados)
-      let query = supabase.from('unidades').select('id, nome');
-
-      if (igrejaId && String(igrejaId).trim()) {
-        query = query.eq('igreja_id', String(igrejaId).trim());
-      }
-
-      const { data, error } = await query;
-      if (error) {
-        console.warn('Aviso ao consultar tabela unidades:', error.message);
-        return { success: false, data: [], error: error.message };
-      }
-
-      const setoresSet = new Set<string>();
-      (data || []).forEach((u: any) => {
-        const nome = String(u.nome || '').trim();
-        if (nome && nome !== '-' && nome !== 'undefined' && nome !== 'null') setoresSet.add(nome);
-      });
-      return { success: true, data: Array.from(setoresSet).sort() };
-    } catch (err: any) {
-      console.warn('Erro ao consultar unidades no Supabase:', err);
-      return { success: false, data: [], error: err.message };
-    }
   },
 
   /**
@@ -834,90 +748,6 @@ export const TreasuryService = {
   },
 
   /**
-   * Busca lista de células cadastradas
-   */
-  getCelulas() {
-    return LISTA_CELULAS;
-  },
-
-  /**
-   * Busca usuários e permissões da tabela permissoes no Supabase
-   */
-  async fetchPermissoes(forceRefresh = false): Promise<{ data: PermissaoUsuario[]; error?: string }> {
-    const now = Date.now();
-    if (!forceRefresh && memoryPermissoes && now - lastPermissoesFetch < CACHE_TTL_MS) {
-      return { data: memoryPermissoes };
-    }
-
-    try {
-      const supabase = getSupabaseClient();
-      const { data, error } = await supabase
-        .from('permissoes')
-        .select('id, codigo, nome, modulo, descricao, criado_em');
-
-      if (!error && data && data.length > 0) {
-        const formatted: PermissaoUsuario[] = data.map((item: any) => ({
-          id: String(item.id || ''),
-          user_id: String(item.id || ''),
-          email: `${String(item.codigo || 'user').replace(':', '.')}@pazchurch.com`,
-          nome: String(item.nome || item.descricao || 'Usuário'),
-          cargo: String(item.modulo || 'Tesouraria'),
-          congregacao_nome: 'Safira',
-          setor: 'Safira',
-          perfil: 'tesoureiro_congregacao',
-          acesso_tesouraria_ativo: true,
-          permissoes: {
-            validar_relatorios: true,
-            rejeitar_relatorios: true,
-            editar_envelopes: true,
-            visualizar_dashboard: true,
-            gerenciar_permissoes: false,
-            exportar_dados: true,
-            excluir_relatorios: false,
-            auditar_conferencia: true,
-          },
-          criado_em: String(item.criado_em || new Date().toISOString().slice(0, 10)),
-        }));
-
-        memoryPermissoes = formatted;
-        lastPermissoesFetch = now;
-        return { data: formatted };
-      }
-      return { data: [] };
-    } catch (err: any) {
-      console.warn('Erro ao consultar permissoes:', err);
-      return { data: memoryPermissoes || [], error: err.message };
-    }
-  },
-
-  /**
-   * Atualiza permissões de um usuário
-   */
-  async updatePermissaoUsuario(usuario: PermissaoUsuario): Promise<boolean> {
-    if (memoryPermissoes) {
-      memoryPermissoes = memoryPermissoes.map((u) => (u.id === usuario.id ? usuario : u));
-    }
-
-    try {
-      const isUUID = UUID_REGEX.test(usuario.id);
-      if (isUUID) {
-        const supabase = getSupabaseClient();
-        await supabase
-          .from('permissoes')
-          .update({
-            nome: usuario.nome,
-            descricao: usuario.cargo,
-          })
-          .eq('id', usuario.id);
-      }
-      return true;
-    } catch (err) {
-      console.warn('Erro ao atualizar permissão no Supabase:', err);
-      return false;
-    }
-  },
-
-  /**
    * Lista todos os membros com acesso concedido na tabela tesouraria_permissao
    */
   async fetchTesourariaPermissoes(): Promise<{ success: boolean; data: TesourariaPermissaoItem[]; error?: string }> {
@@ -955,28 +785,4 @@ export const TreasuryService = {
     return { success: Boolean(res.success), error: res.error };
   },
 
-  /**
-   * Cadastra novo usuário na lista de permissões (legado)
-   */
-  async createPermissaoUsuario(novoUsuario: PermissaoUsuario): Promise<boolean> {
-    if (memoryPermissoes) {
-      memoryPermissoes = [novoUsuario, ...memoryPermissoes];
-    }
-
-    try {
-      const supabase = getSupabaseClient();
-      await supabase.from('permissoes').insert([
-        {
-          codigo: `user:${novoUsuario.email.split('@')[0]}`,
-          nome: novoUsuario.nome,
-          modulo: novoUsuario.cargo,
-          descricao: novoUsuario.cargo,
-        },
-      ]);
-      return true;
-    } catch (err) {
-      console.warn('Erro ao cadastrar permissão no Supabase:', err);
-      return false;
-    }
-  },
 };
