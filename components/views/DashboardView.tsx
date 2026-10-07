@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo, useRef, useEffect } from 'react';
+import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { RotateCw, ShieldCheck, Menu, TrendingUp } from 'lucide-react';
 import { LancamentoTesouraria, UnidadeCadastrada, MembroItem } from '@/lib/types';
 import { TreasuryService } from '@/lib/treasury-service';
@@ -375,14 +375,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     if (isModoAnosNoGrafico) {
       const anosOrdenados = [...anosDisponiveis].sort((a, b) => a - b);
       return anosOrdenados.map((anoItem) => {
-        const doAnoEMes = lancamentosValidados.filter(
+        const doAnoEMesTodos = lancamentos.filter(
           (l) => Number(l.ano) === anoItem && Number(l.mes) === Number(numMesSelecionado)
         );
-        const esp = doAnoEMes.reduce(
+        const doAnoEMesValidados = doAnoEMesTodos.filter((l) => l.TESOURARIA_RECEB === true);
+
+        const esp = doAnoEMesValidados.reduce(
           (acc, curr) => acc + Number(curr.valorEspecie ?? curr.OfertaEspecie ?? 0),
           0
         );
-        const pix = doAnoEMes.reduce(
+        const pix = doAnoEMesValidados.reduce(
           (acc, curr) => acc + Number(curr.valorPix ?? curr.ValorOferta ?? 0),
           0
         );
@@ -390,14 +392,20 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           unidadesMaisBaixas.length > 0
             ? calcularEncontrosPrevistosMes(anoItem, Number(numMesSelecionado) || 1, unidadesMaisBaixas)
             : celulasAtivas * 4;
-        const confirmados = doAnoEMes.length;
-        const perc = previstos > 0 && confirmados > 0 ? Math.min(100, Math.round((confirmados / previstos) * 100)) : 0;
+
+        const totalRelatorios = doAnoEMesTodos.length;
+        const validados = doAnoEMesValidados.length;
+        // Porcentagem calculada em relação ao total de relatórios e o total validado dentro do período
+        const perc = totalRelatorios > 0 ? Math.min(100, Math.round((validados / totalRelatorios) * 100)) : 0;
+
         return {
           nome: String(anoItem),
           esp,
           pix,
           total: esp + pix,
-          confirmados,
+          confirmados: validados,
+          validados,
+          totalRelatorios,
           previstos,
           perc,
         };
@@ -406,16 +414,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
     return NOMES_MESES_ABREV.map((nomeAbrev, idx) => {
       const mesNum = idx + 1;
-      const doMes = lancamentosValidados.filter((l) => {
+      const doMesTodos = lancamentos.filter((l) => {
         const matchAno = isTodosAnos || Number(l.ano) === Number(anoSelecionado);
         return matchAno && Number(l.mes) === mesNum;
       });
+      const doMesValidados = doMesTodos.filter((l) => l.TESOURARIA_RECEB === true);
 
-      const esp = doMes.reduce(
+      const esp = doMesValidados.reduce(
         (acc, curr) => acc + Number(curr.valorEspecie ?? curr.OfertaEspecie ?? 0),
         0
       );
-      const pix = doMes.reduce(
+      const pix = doMesValidados.reduce(
         (acc, curr) => acc + Number(curr.valorPix ?? curr.ValorOferta ?? 0),
         0
       );
@@ -435,15 +444,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         previstos = celulasAtivas * 4 * multAnos;
       }
 
-      const confirmados = doMes.length;
-      const perc = previstos > 0 && confirmados > 0 ? Math.min(100, Math.round((confirmados / previstos) * 100)) : 0;
+      const totalRelatorios = doMesTodos.length;
+      const validados = doMesValidados.length;
+      // Porcentagem calculada em relação ao total de relatórios e o total validado dentro do período
+      const perc = totalRelatorios > 0 ? Math.min(100, Math.round((validados / totalRelatorios) * 100)) : 0;
 
       return {
         nome: nomeAbrev,
         esp,
         pix,
         total: esp + pix,
-        confirmados,
+        confirmados: validados,
+        validados,
+        totalRelatorios,
         previstos,
         perc,
       };
@@ -451,7 +464,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   }, [
     isModoAnosNoGrafico,
     anosDisponiveis,
-    lancamentosValidados,
+    lancamentos,
     numMesSelecionado,
     unidadesMaisBaixas,
     celulasAtivas,
@@ -463,6 +476,94 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     const maxVal = Math.max(...mesesGrafico.map((m) => Math.max(m.esp, m.pix)), 0);
     return maxVal > 0 ? maxVal * 1.3 : 1000;
   }, [mesesGrafico]);
+
+  // Centraliza no bloco o mês atual ou o mês selecionado via rolagem horizontal automática (sem alterar ou distorcer o layout)
+  const centralizarMesNoGrafico = useCallback((suave = true) => {
+    let indiceAlvo = new Date().getMonth();
+
+    if (isModoAnosNoGrafico) {
+      const anoAlvo = Number(anoSelecionado) || new Date().getFullYear();
+      const idx = mesesGrafico.findIndex((m) => Number(m.nome) === anoAlvo);
+      if (idx !== -1) indiceAlvo = idx;
+      else if (mesesGrafico.length > 0) indiceAlvo = mesesGrafico.length - 1;
+    } else {
+      if (!isTodosMeses && numMesSelecionado > 0) {
+        indiceAlvo = numMesSelecionado - 1;
+      } else {
+        indiceAlvo = new Date().getMonth();
+      }
+    }
+
+    const containers = [scrollContainerRef1.current, scrollContainerRef2.current];
+    containers.forEach((container) => {
+      if (!container) return;
+      const targetColumn = container.querySelector<HTMLElement>(`[data-col-index="${indiceAlvo}"]`);
+      if (!targetColumn) return;
+
+      const targetLeft = targetColumn.offsetLeft;
+      const targetWidth = targetColumn.offsetWidth;
+      const containerWidth = container.clientWidth;
+      const targetScrollLeft = targetLeft - (containerWidth / 2) + (targetWidth / 2);
+
+      container.scrollTo({
+        left: Math.max(0, targetScrollLeft),
+        behavior: suave ? 'smooth' : 'auto',
+      });
+    });
+  }, [isModoAnosNoGrafico, anoSelecionado, mesesGrafico, isTodosMeses, numMesSelecionado]);
+
+  // Efeito para centralizar o mês selecionado/atual ao carregar ou alterar filtros
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      centralizarMesNoGrafico(true);
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [centralizarMesNoGrafico]);
+
+  // Efeito para manter a centralização em caso de redimensionamento da janela
+  useEffect(() => {
+    const handleResize = () => {
+      centralizarMesNoGrafico(false);
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [centralizarMesNoGrafico]);
+
+  // Sincroniza a rolagem horizontal suave entre os dois gráficos mantendo-os alinhados
+  useEffect(() => {
+    const c1 = scrollContainerRef1.current;
+    const c2 = scrollContainerRef2.current;
+    if (!c1 || !c2) return;
+
+    let isSyncing1 = false;
+    let isSyncing2 = false;
+
+    const onScroll1 = () => {
+      if (isSyncing1) return;
+      isSyncing2 = true;
+      c2.scrollLeft = c1.scrollLeft;
+      requestAnimationFrame(() => {
+        isSyncing2 = false;
+      });
+    };
+
+    const onScroll2 = () => {
+      if (isSyncing2) return;
+      isSyncing1 = true;
+      c1.scrollLeft = c2.scrollLeft;
+      requestAnimationFrame(() => {
+        isSyncing1 = false;
+      });
+    };
+
+    c1.addEventListener('scroll', onScroll1, { passive: true });
+    c2.addEventListener('scroll', onScroll2, { passive: true });
+
+    return () => {
+      c1.removeEventListener('scroll', onScroll1);
+      c2.removeEventListener('scroll', onScroll2);
+    };
+  }, []);
 
   const formatarValorColuna = (val: number, temMovimento = false): string => {
     if (val === undefined || val === null) return '';
@@ -489,134 +590,101 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     };
   };
 
-  // Ranking por setores
+  // Ranking por setores:
+  // - Contagem de células ativas por setor mantém exatamente as mesmas regras de células ativas (unidadesMaisBaixas)
+  // - Porcentagem é a relação de relatórios validados sobre os relatórios que foram enviados pelo setor no período filtrado
   const rankingSetores = useMemo(() => {
-    const celulasPorSetor = new Map<string, Set<string>>();
-    const entreguesPorSetor = new Map<string, number>();
-
-    // Identifica a igreja do usuário logado
-    const igrejaIdLogada = (
-      usuarioLogado?.igreja_id ||
-      usuarioLogado?.churchId ||
-      IGREJA_ID_PADRAO
-    ).trim().toLowerCase();
-
     // Mapeamento de id do setor para nome
     const mapaSetoresPorId = new Map<string, string>();
     unidadesCadastradas.forEach((u) => {
       mapaSetoresPorId.set(u.id, u.nome);
     });
 
-    // Identifica todos os IDs de unidades que possuem filhas
-    const idsQueSaoPais = new Set(
-      unidadesCadastradas
-        .map((u) => u.pai_id)
-        .filter((paiId): paiId is string => Boolean(paiId && String(paiId).trim()))
-        .map((paiId) => String(paiId).trim().toLowerCase())
-    );
-
-    if (unidadesCadastradas.length > 0) {
-      unidadesCadastradas.forEach((u) => {
-        const isAtivo = u.ativo === true;
-        const matchNivel =
-          !u.nivel_tipo_id ||
-          String(u.nivel_tipo_id).trim().toLowerCase() === NIVEL_TIPO_CELULA_ID.toLowerCase();
-        const matchIgreja =
-          !u.igreja_id ||
-          String(u.igreja_id).trim().toLowerCase() === igrejaIdLogada;
-        const idNorm = String(u.id).trim().toLowerCase();
-        const ehMaisBaixa = !idsQueSaoPais.has(idNorm);
-
-        if (isAtivo && matchNivel && matchIgreja && ehMaisBaixa && u.pai_id) {
-          const nomeSetor = (mapaSetoresPorId.get(u.pai_id) || 'Safira').trim();
-          if (!celulasPorSetor.has(nomeSetor)) celulasPorSetor.set(nomeSetor, new Set());
-          celulasPorSetor.get(nomeSetor)!.add(u.nome);
-        }
-      });
-    }
-
-    lancamentos.forEach((l) => {
-      const setor = (l.Setor || l.setor || 'Safira').trim();
-      const celula = (l.Célula || l.celulaNome || '').trim();
-      if (celula && unidadesCadastradas.length === 0) {
-        if (!celulasPorSetor.has(setor)) celulasPorSetor.set(setor, new Set());
-        celulasPorSetor.get(setor)!.add(celula);
-      }
-
-      if (l.TESOURARIA_RECEB === true) {
-        const matchAno = isTodosAnos || Number(l.ano) === Number(anoSelecionado);
-        const matchMes = isTodosMeses || Number(l.mes) === Number(numMesSelecionado);
-        if (matchAno && matchMes) {
-          entreguesPorSetor.set(setor, (entreguesPorSetor.get(setor) || 0) + 1);
+    // Mapeamento de célula (id e nome) para o nome do setor
+    const mapaUnidadeParaSetor = new Map<string, string>();
+    unidadesCadastradas.forEach((u) => {
+      if (u.pai_id) {
+        const nomeSetor = (mapaSetoresPorId.get(u.pai_id) || '').trim();
+        if (nomeSetor) {
+          mapaUnidadeParaSetor.set(u.id.toLowerCase(), nomeSetor);
+          mapaUnidadeParaSetor.set(u.nome.trim().toLowerCase(), nomeSetor);
         }
       }
     });
 
-    const todosSetores = new Set<string>([
-      ...Array.from(celulasPorSetor.keys()),
-      ...Array.from(entreguesPorSetor.keys()),
-    ]);
+    const resolverSetorLancamento = (l: LancamentoTesouraria): string => {
+      if (l.unidade_id && mapaUnidadeParaSetor.has(String(l.unidade_id).toLowerCase())) {
+        return mapaUnidadeParaSetor.get(String(l.unidade_id).toLowerCase())!;
+      }
+      const celula = (l.Célula || l.celulaNome || '').trim().toLowerCase();
+      if (celula && mapaUnidadeParaSetor.has(celula)) {
+        return mapaUnidadeParaSetor.get(celula)!;
+      }
+      const setor = (l.Setor || l.setor || '').trim();
+      return setor || 'Safira';
+    };
 
+    // Todos os setores a partir das unidades de menor nível ativas da igreja
+    const todosSetores = new Set<string>();
+    unidadesMaisBaixas.forEach((u) => {
+      if (u.pai_id) {
+        const nomeSetor = (mapaSetoresPorId.get(u.pai_id) || '').trim();
+        if (nomeSetor) todosSetores.add(nomeSetor);
+      }
+    });
+
+    // Se ainda não houver setores cadastrados, usa os nomes canônicos
     if (todosSetores.size === 0) {
       ['Safira', 'Fire', 'White', 'Black', 'Azul', 'Amarelo', 'Legacy', 'Onix', 'Diamante', 'Titanium'].forEach((s) =>
         todosSetores.add(s)
       );
     }
 
-    const lista = Array.from(todosSetores).map((nome) => {
-      const ativas = (celulasPorSetor.get(nome) || new Set()).size || 0;
-      const unidadesDoSetor = unidadesMaisBaixas.filter((u) => {
-        const nomeSetor = (mapaSetoresPorId.get(u.pai_id || '') || '').trim();
-        return nomeSetor.toLowerCase() === nome.toLowerCase();
-      });
+    // Contagem de relatórios enviados e validados por setor no período filtrado
+    const enviadosPorSetor = new Map<string, number>();
+    const validadosPorSetor = new Map<string, number>();
 
-      let previstos = 0;
-      if (unidadesDoSetor.length > 0) {
-        if (isTodosMeses) {
-          const anos = isTodosAnos ? anosDisponiveis : [Number(anoSelecionado) || new Date().getFullYear()];
-          for (const anoItem of anos) {
-            const anoNum = Number(anoItem) || new Date().getFullYear();
-            const maxMes = anoNum === new Date().getFullYear() ? new Date().getMonth() + 1 : 12;
-            for (let m = 1; m <= maxMes; m++) {
-              previstos += calcularEncontrosPrevistosMes(anoNum, m, unidadesDoSetor);
-            }
-          }
-        } else {
-          const anoEfetivo = Number(anoSelecionado) || new Date().getFullYear();
-          const mesEfetivo = numMesSelecionado > 0 ? numMesSelecionado : new Date().getMonth() + 1;
-          if (isTodosAnos) {
-            for (const anoItem of anosDisponiveis) {
-              previstos += calcularEncontrosPrevistosMes(Number(anoItem), mesEfetivo, unidadesDoSetor);
-            }
-          } else {
-            previstos = calcularEncontrosPrevistosMes(anoEfetivo, mesEfetivo, unidadesDoSetor);
-          }
+    lancamentos.forEach((l) => {
+      const matchAno = isTodosAnos || Number(l.ano) === Number(anoSelecionado);
+      const matchMes = isTodosMeses || Number(l.mes) === Number(numMesSelecionado);
+      if (matchAno && matchMes) {
+        const setor = resolverSetorLancamento(l);
+        enviadosPorSetor.set(setor, (enviadosPorSetor.get(setor) || 0) + 1);
+        if (l.TESOURARIA_RECEB === true) {
+          validadosPorSetor.set(setor, (validadosPorSetor.get(setor) || 0) + 1);
         }
-      } else {
-        previstos = ativas * 4 * fatorMeses;
       }
-
-      const entregues = entreguesPorSetor.get(nome) || 0;
-      let perc = 0;
-      if (previstos > 0 && entregues > 0) {
-        perc = Math.min(100, Math.round((entregues / previstos) * 100));
-      }
-      return { nome, ativas, previstos, entregues, perc };
     });
 
-    lista.sort((a, b) => b.perc - a.perc || b.entregues - a.entregues);
+    const lista = Array.from(todosSetores).map((nome) => {
+      // Contagem de células ativas do setor com as mesmas regras rigorosas de células ativas da igreja
+      const ativas = unidadesMaisBaixas.filter((u) => {
+        const nomeSetor = (mapaSetoresPorId.get(u.pai_id || '') || '').trim();
+        return nomeSetor.toLowerCase() === nome.toLowerCase();
+      }).length;
+
+      const enviados = enviadosPorSetor.get(nome) || 0;
+      const validados = validadosPorSetor.get(nome) || 0;
+
+      // Porcentagem calculada estritamente em relação à quantidade de relatórios validados e os relatórios enviados
+      let perc = 0;
+      if (enviados > 0) {
+        perc = Math.min(100, Math.round((validados / enviados) * 100));
+      }
+
+      return { nome, ativas, enviados, validados, perc };
+    });
+
+    lista.sort((a, b) => b.perc - a.perc || b.validados - a.validados || b.enviados - a.enviados || b.ativas - a.ativas);
     return lista;
   }, [
     unidadesCadastradas,
     unidadesMaisBaixas,
-    usuarioLogado,
     lancamentos,
     isTodosAnos,
     anoSelecionado,
     isTodosMeses,
     numMesSelecionado,
-    fatorMeses,
-    anosDisponiveis,
   ]);
 
   const totalLancadosMes = lancamentosTodosMesAtual.length;
@@ -781,7 +849,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     : 'min-w-[760px] xl:min-w-0 grid grid-cols-12 gap-1.5 sm:gap-2'
                 }`}
               >
-                {mesesGrafico.map((m) => {
+                {mesesGrafico.map((m, idx) => {
                   const altPix = maxOferta > 0 ? (m.pix / maxOferta) * 100 : 0;
                   const altEsp = maxOferta > 0 ? (m.esp / maxOferta) * 100 : 0;
                   const temMovimento = m.total > 0;
@@ -790,6 +858,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   return (
                     <div
                       key={m.nome}
+                      data-col-index={idx}
                       className="flex flex-col items-center h-full justify-end group relative"
                     >
                       <div className="w-full h-36 sm:h-40 flex items-end justify-center gap-1 px-0.5">
@@ -853,7 +922,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     : 'Relatórios Recebidos Mês a Mês (%)'}
                 </h3>
                 <p className="text-[11px] text-slate-400 mt-0.5">
-                  % de relatórios validados pela Tesouraria em relação à meta prevista
+                  % de relatórios validados em relação ao total de relatórios dentro do período
                 </p>
               </div>
             </div>
@@ -866,11 +935,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     : 'min-w-[760px] xl:min-w-0 grid grid-cols-12 gap-1.5 sm:gap-2'
                 }`}
               >
-                {mesesGrafico.map((m) => {
+                {mesesGrafico.map((m, idx) => {
                   const isRed = m.perc < 80 && m.perc > 0;
                   const barColor = isRed ? 'bg-[#c85a5a]' : 'bg-[#22c55e]';
                   return (
-                    <div key={m.nome} className="flex flex-col items-center h-full justify-end">
+                    <div
+                      key={m.nome}
+                      data-col-index={idx}
+                      className="flex flex-col items-center h-full justify-end group relative"
+                      title={`${m.nome}: ${m.validados} validados de ${m.totalRelatorios} relatórios (${m.perc}%)`}
+                    >
                       <div className="h-5 flex items-center justify-center mb-1">
                         {m.perc > 0 && (
                           <span className="text-[9px] text-slate-300 font-bold font-mono">
@@ -952,7 +1026,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <div>
                 <h3 className="text-sm font-bold text-white">Ranking por Setores</h3>
                 <p className="text-[10px] text-slate-400 mt-0.5">
-                  ({mesSelecionado}/{anoSelecionado})
+                  ({isTodosMeses ? 'Todos os Meses' : mesSelecionado}/{isTodosAnos ? 'Todos os Anos' : anoSelecionado}) • Validados / Enviados
                 </p>
               </div>
               <div className="flex items-center gap-2 text-[10px] font-semibold bg-[#1a1e30] px-2 py-1 rounded-lg border border-[#303752] self-start sm:self-auto shrink-0">
@@ -988,9 +1062,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         ({s.ativas} {s.ativas === 1 ? 'célula ativa' : 'células ativas'})
                       </span>
                     </div>
-                    <span className={`font-bold text-sm shrink-0 pl-2 font-mono ${cor.text}`}>
-                      {s.perc}%
-                    </span>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="text-[10px] text-slate-400 font-mono">
+                        ({s.validados}/{s.enviados})
+                      </span>
+                      <span className={`font-bold text-sm shrink-0 pl-1 font-mono ${cor.text}`}>
+                        {s.perc}%
+                      </span>
+                    </div>
                   </div>
                 );
               })}
