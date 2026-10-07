@@ -4,7 +4,7 @@ import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react'
 import { RotateCw, ShieldCheck, Menu, TrendingUp } from 'lucide-react';
 import { LancamentoTesouraria, UnidadeCadastrada, MembroItem } from '@/lib/types';
 import { TreasuryService, SEM_SETOR } from '@/lib/treasury-service';
-import { formatBRL } from '@/lib/utils';
+import { formatBRL, somarReais } from '@/lib/utils';
 
 interface DashboardViewProps {
   lancamentos: LancamentoTesouraria[];
@@ -247,17 +247,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   // Totais KPIs
   const totalMesPix = useMemo(() => {
-    return lancamentosMesAtual.reduce((acc, curr) => acc + (curr.valorPix ?? curr.ValorOferta ?? 0), 0);
+    return somarReais(lancamentosMesAtual, (curr) => curr.valorPix ?? curr.ValorOferta ?? 0);
   }, [lancamentosMesAtual]);
 
   const totalMesEspecie = useMemo(() => {
-    return lancamentosMesAtual.reduce(
-      (acc, curr) => acc + (curr.valorEspecie ?? curr.OfertaEspecie ?? 0),
-      0
-    );
+    return somarReais(lancamentosMesAtual, (curr) => curr.valorEspecie ?? curr.OfertaEspecie ?? 0);
   }, [lancamentosMesAtual]);
 
-  const totalMesGeral = totalMesPix + totalMesEspecie;
+  const totalMesGeral = Math.round((totalMesPix + totalMesEspecie) * 100) / 100;
 
   // Unidades mais baixas ativas na hierarquia (células):
   // 1. ativo === true
@@ -365,14 +362,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         );
         const doAnoEMesValidados = doAnoEMesTodos.filter((l) => l.TESOURARIA_RECEB === true);
 
-        const esp = doAnoEMesValidados.reduce(
-          (acc, curr) => acc + Number(curr.valorEspecie ?? curr.OfertaEspecie ?? 0),
-          0
-        );
-        const pix = doAnoEMesValidados.reduce(
-          (acc, curr) => acc + Number(curr.valorPix ?? curr.ValorOferta ?? 0),
-          0
-        );
+        const esp = somarReais(doAnoEMesValidados, (curr) => curr.valorEspecie ?? curr.OfertaEspecie ?? 0);
+        const pix = somarReais(doAnoEMesValidados, (curr) => curr.valorPix ?? curr.ValorOferta ?? 0);
         const previstos =
           unidadesMaisBaixas.length > 0
             ? calcularEncontrosPrevistosMes(anoItem, Number(numMesSelecionado) || 1, unidadesMaisBaixas)
@@ -387,7 +378,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           nome: String(anoItem),
           esp,
           pix,
-          total: esp + pix,
+          total: Math.round((esp + pix) * 100) / 100,
           confirmados: validados,
           validados,
           totalRelatorios,
@@ -405,14 +396,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       });
       const doMesValidados = doMesTodos.filter((l) => l.TESOURARIA_RECEB === true);
 
-      const esp = doMesValidados.reduce(
-        (acc, curr) => acc + Number(curr.valorEspecie ?? curr.OfertaEspecie ?? 0),
-        0
-      );
-      const pix = doMesValidados.reduce(
-        (acc, curr) => acc + Number(curr.valorPix ?? curr.ValorOferta ?? 0),
-        0
-      );
+      const esp = somarReais(doMesValidados, (curr) => curr.valorEspecie ?? curr.OfertaEspecie ?? 0);
+      const pix = somarReais(doMesValidados, (curr) => curr.valorPix ?? curr.ValorOferta ?? 0);
 
       let previstos = 0;
       if (unidadesMaisBaixas.length > 0) {
@@ -438,7 +423,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         nome: nomeAbrev,
         esp,
         pix,
-        total: esp + pix,
+        total: Math.round((esp + pix) * 100) / 100,
         confirmados: validados,
         validados,
         totalRelatorios,
