@@ -57,7 +57,7 @@ export default function TreasuryApp() {
   const [anoValidar, setAnoValidar] = useState<number | string>(2026);
   const [anoEnvelopes, setAnoEnvelopes] = useState<number | string>(2026);
   const [mesEnvelopes, setMesEnvelopes] = useState<string>(() => String(new Date().getMonth() + 1));
-  const [setorEnvelopes, setSetorEnvelopes] = useState<string>('Safira');
+  const [setorEnvelopes, setSetorEnvelopes] = useState<string>('');
 
   // Compute active user safely across SSR and Client
   const usuarioLogado = useMemo(() => {
@@ -198,25 +198,21 @@ export default function TreasuryApp() {
     showToast('Sessão encerrada com sucesso.');
   };
 
-  // Setores únicos
+  // Setores da igreja: pais das unidades da ponta (células) no cadastro,
+  // mais qualquer setor que apareça nos relatórios carregados
   const setoresDisponiveis = useMemo(() => {
+    const porId = new Map(unidadesCadastradas.map((u) => [u.id, u.nome]));
+    const pais = new Set(unidadesCadastradas.map((u) => u.pai_id).filter(Boolean));
     const sSet = new Set<string>();
-    sSet.add('Safira');
-    sSet.add('Fire');
-    sSet.add('White');
-    sSet.add('Black');
-    sSet.add('Azul');
-    sSet.add('Amarelo');
-    sSet.add('Legacy');
-    sSet.add('Onix');
-    sSet.add('Diamante');
-    sSet.add('Titanium');
+    unidadesCadastradas.forEach((u) => {
+      if (!pais.has(u.id) && u.pai_id && porId.get(u.pai_id)) sSet.add(porId.get(u.pai_id)!.trim());
+    });
     lancamentos.forEach((l) => {
       const s = (l.Setor || l.setor || '').trim();
       if (s) sSet.add(s);
     });
-    return Array.from(sSet);
-  }, [lancamentos]);
+    return Array.from(sSet).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  }, [unidadesCadastradas, lancamentos]);
 
   // Contagem de pendentes: informada pela tela Validar Relatórios (resumo do servidor)
   const [pendingCount, setPendingCount] = useState<number>(0);
@@ -281,6 +277,7 @@ export default function TreasuryApp() {
             onSelectMes={setMesEnvelopes}
             setorSelecionado={setorEnvelopes}
             onSelectSetor={setSetorEnvelopes}
+            setoresDisponiveis={setoresDisponiveis}
             onShowToast={showToast}
           />
         )}

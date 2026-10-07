@@ -3,7 +3,7 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { RotateCw, ShieldCheck, Menu, TrendingUp } from 'lucide-react';
 import { LancamentoTesouraria, UnidadeCadastrada, MembroItem } from '@/lib/types';
-import { TreasuryService } from '@/lib/treasury-service';
+import { TreasuryService, SEM_SETOR } from '@/lib/treasury-service';
 import { formatBRL } from '@/lib/utils';
 
 interface DashboardViewProps {
@@ -255,31 +255,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   const totalMesGeral = totalMesPix + totalMesEspecie;
 
-  const NIVEL_TIPO_CELULA_ID = '320a19aa-7e16-457c-95e5-d8d3cbfe9945';
-  const IGREJA_ID_PADRAO = 'ff600f5f-b91f-4826-bde2-3976e718877c';
-
-  // Unidades mais baixas ativas na hierarquia da igreja do usuário logado:
+  // Unidades mais baixas ativas na hierarquia (células):
   // 1. ativo === true
-  // 2. Igreja relacionada ao usuário logado
-  // 3. nivel_tipo_id === '320a19aa-7e16-457c-95e5-d8d3cbfe9945' (se informado)
-  // 4. Não é pai de nenhuma outra unidade (ponta mais baixa da hierarquia)
+  // 2. do nível "célula" da igreja (eh_celula, calculado pelo servidor), quando informado
+  // 3. não é pai de nenhuma outra unidade (ponta mais baixa da hierarquia)
+  // A API já devolve só as unidades da igreja do usuário logado.
   const unidadesMaisBaixas = useMemo(() => {
     if (!unidadesCadastradas || unidadesCadastradas.length === 0) {
       return [];
     }
-
-    // Igreja do usuário logado
-    const igrejaIdLogada = (
-      usuarioLogado?.igreja_id ||
-      usuarioLogado?.churchId ||
-      IGREJA_ID_PADRAO
-    ).trim().toLowerCase();
-
-    // Filtra as unidades vinculadas à igreja do usuário
-    const unidadesIgreja = unidadesCadastradas.filter((u) => {
-      if (!u.igreja_id) return true; // Se a listagem já veio filtrada pela igreja na API
-      return String(u.igreja_id).trim().toLowerCase() === igrejaIdLogada;
-    });
+    const unidadesIgreja = unidadesCadastradas;
 
     // Identifica todos os IDs de unidades que possuem filhas (são 'pai' de alguma unidade)
     const idsQueSaoPais = new Set(
@@ -294,12 +279,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       // Regra 1: Apenas os ativos
       if (u.ativo !== true) return false;
 
-      // Regra 2: Se tiver nivel_tipo_id, deve ser o nível mais baixo (célula)
-      if (u.nivel_tipo_id) {
-        if (String(u.nivel_tipo_id).trim().toLowerCase() !== NIVEL_TIPO_CELULA_ID.toLowerCase()) {
-          return false;
-        }
-      }
+      // Regra 2: deve ser do nível "célula" da igreja (quando o servidor souber informar)
+      if (u.eh_celula === false) return false;
 
       // Regra 3: Não pode ser pai de nenhuma outra unidade (garante a ponta mais baixa da hierarquia)
       const idNorm = String(u.id).trim().toLowerCase();
@@ -309,7 +290,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
       return true;
     });
-  }, [unidadesCadastradas, usuarioLogado]);
+  }, [unidadesCadastradas]);
 
   // Contagem de células ativas (unidades de menor nível ativas)
   const celulasAtivas = unidadesMaisBaixas.length;
@@ -621,7 +602,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         return mapaUnidadeParaSetor.get(celula)!;
       }
       const setor = (l.Setor || l.setor || '').trim();
-      return setor || 'Safira';
+      return setor || SEM_SETOR;
     };
 
     // Todos os setores a partir das unidades de menor nível ativas da igreja
@@ -633,11 +614,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       }
     });
 
-    // Se ainda não houver setores cadastrados, usa os nomes canônicos
+    // Sem unidades cadastradas: usa os setores que aparecem nos próprios relatórios
     if (todosSetores.size === 0) {
-      ['Safira', 'Fire', 'White', 'Black', 'Azul', 'Amarelo', 'Legacy', 'Onix', 'Diamante', 'Titanium'].forEach((s) =>
-        todosSetores.add(s)
-      );
+      lancamentos.forEach((l) => todosSetores.add(resolverSetorLancamento(l)));
     }
 
     // Contagem de relatórios enviados e validados por setor no período filtrado

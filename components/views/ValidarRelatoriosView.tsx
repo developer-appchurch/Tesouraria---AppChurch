@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 import { LancamentoTesouraria, MembroItem, PermissaoUsuario } from '@/lib/types';
 import { formatBRL, formatDateBR } from '@/lib/utils';
-import { TreasuryService, MAPA_CELULAS_SETORES, registrarLimpezaDeCache } from '@/lib/treasury-service';
+import { TreasuryService, SEM_SETOR, registrarLimpezaDeCache } from '@/lib/treasury-service';
 
 interface RelatorioDetalhadoRPC {
   id: string;
@@ -328,8 +328,7 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
       if (setorSelecionadoId !== null) {
         let s = (r.setor || r.setor_nome || '').trim().toLowerCase();
         if (!s) {
-          const c = (r.celula_nome || '').trim().toLowerCase();
-          s = (MAPA_CELULAS_SETORES[c] || 'safira').toLowerCase();
+          s = SEM_SETOR.toLowerCase();
         }
         if (s !== setorSelecionadoId.trim().toLowerCase()) return false;
       }
@@ -373,8 +372,8 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
     }));
     const itemTarget = relatorios.find((r) => r.id === id);
     let itemSetor = (itemTarget?.setor || itemTarget?.setor_nome || '').toLowerCase();
-    if (!itemSetor && itemTarget?.celula_nome) {
-      itemSetor = (MAPA_CELULAS_SETORES[itemTarget.celula_nome.toLowerCase()] || 'safira').toLowerCase();
+    if (!itemSetor) {
+      itemSetor = SEM_SETOR.toLowerCase();
     }
     setSetoresList((prev) =>
       prev.map((s) =>
@@ -438,8 +437,8 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
     }));
     const itemTarget = relatorios.find((r) => r.id === id);
     let itemSetor = (itemTarget?.setor || itemTarget?.setor_nome || '').toLowerCase();
-    if (!itemSetor && itemTarget?.celula_nome) {
-      itemSetor = (MAPA_CELULAS_SETORES[itemTarget.celula_nome.toLowerCase()] || 'safira').toLowerCase();
+    if (!itemSetor) {
+      itemSetor = SEM_SETOR.toLowerCase();
     }
     setSetoresList((prev) =>
       prev.map((s) =>

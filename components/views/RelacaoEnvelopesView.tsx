@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import { LancamentoTesouraria, UnidadeCadastrada } from '@/lib/types';
 import { formatBRL, formatDateBR } from '@/lib/utils';
-import { TreasuryService, MAPA_CELULAS_SETORES, registrarLimpezaDeCache } from '@/lib/treasury-service';
+import { TreasuryService, SEM_SETOR, registrarLimpezaDeCache } from '@/lib/treasury-service';
 
 let globalUnidadesCache: UnidadeCadastrada[] | null = null;
 registrarLimpezaDeCache(() => {
@@ -36,7 +36,7 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
   lancamentos = [],
   anoSelecionado,
   mesSelecionado = '10',
-  setorSelecionado = 'Safira',
+  setorSelecionado = '',
   onRefresh,
   onShowToast,
 }) => {
@@ -92,7 +92,7 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
 
   // 1. Extrair APENAS as unidades cujo pai_id(setor) seja o setor selecionado e ativo = true
   const celulasDoSetor = useMemo(() => {
-    const setorAlvo = (setorSelecionado || 'Safira').trim().toLowerCase();
+    const setorAlvo = (setorSelecionado || '').trim().toLowerCase();
 
     // Mapeamento de id do setor para nome do setor
     const mapaSetoresPorId = new Map<string, string>();
@@ -100,7 +100,7 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
       mapaSetoresPorId.set(u.id, u.nome);
     });
 
-    // Encontra a unidade que representa o setor selecionado (ex: unidade com nome "Safira")
+    // Encontra a unidade que representa o setor selecionado (pelo nome)
     const setorUnit = unidadesCadastradas.find(
       (u) => u.nome.trim().toLowerCase() === setorAlvo
     );
@@ -141,7 +141,7 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
 
     return unidadesFiltradas
       .map((u) => {
-        const setorNome = (u.pai_id && mapaSetoresPorId.get(u.pai_id)) || setorUnit?.nome || setorSelecionado || 'Safira';
+        const setorNome = (u.pai_id && mapaSetoresPorId.get(u.pai_id)) || setorUnit?.nome || setorSelecionado || SEM_SETOR;
         const lider =
           u.lider_nome ||
           (u.lideres && u.lideres.length > 0 ? u.lideres.join(', ') : null) ||
@@ -221,7 +221,7 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
       }
     >();
 
-    const setorAlvo = (setorSelecionado || 'Safira').trim().toLowerCase();
+    const setorAlvo = (setorSelecionado || '').trim().toLowerCase();
 
     // Helper para verificar se a data está na janela de 7 dias daquela semana (terminando no sábado)
     const isDateInWeekWindow = (dateIso: string, saturday: Date): boolean => {
@@ -248,7 +248,7 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
 
       let setorNome = (l.Setor || l.setor || '').trim().toLowerCase();
       if (!setorNome) {
-        setorNome = (MAPA_CELULAS_SETORES[celNome] || 'safira').toLowerCase();
+        setorNome = SEM_SETOR.toLowerCase();
       }
 
       // Filtro de setor
@@ -398,8 +398,7 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
       const l = lancamentos[i];
       let s = (l.Setor || l.setor || '').trim().toLowerCase();
       if (!s) {
-        const c = (l.Célula || l.celulaNome || '').trim().toLowerCase();
-        s = (MAPA_CELULAS_SETORES[c] || 'safira').toLowerCase();
+        s = SEM_SETOR.toLowerCase();
       }
 
       if (!isTodosSetores && s !== setorFiltro) continue;
@@ -412,7 +411,7 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
       }
 
       const celNome = (l.Célula || l.celulaNome || '').trim();
-      const setorNome = (l.Setor || l.setor || 'Safira').trim();
+      const setorNome = (l.Setor || l.setor || SEM_SETOR).trim();
       if (!celNome) continue;
 
       semanas.forEach((semInfo) => {

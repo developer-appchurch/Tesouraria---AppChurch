@@ -1,6 +1,5 @@
 import { getSupabaseClient } from './supabase';
 import { LancamentoTesouraria, AppChurchUser, MembroItem, UnidadeCadastrada, TesourariaPermissaoItem, MembroBuscaItem } from './types';
-import { LISTA_CELULAS } from './celulas-data';
 
 // In-memory cache for high performance and reduced query consumption
 let memoryLancamentos: LancamentoTesouraria[] | null = null;
@@ -47,18 +46,8 @@ export function formatarDataBR(val: any): string {
   return str;
 }
 
-export const MAPA_CELULAS_SETORES: Record<string, string> = {
-  'maranata': 'Safira', 'nazireu': 'Safira', 'cordeirinhos kids': 'Safira', 'metanoia': 'Safira', 'efratá': 'Safira', 'tetelestai': 'Safira',
-  'frutifera': 'Fire', 'ekklesia': 'Fire', 'jeová jireh': 'Fire', 'elohim': 'Fire', 'huiós': 'Fire', 'adonai': 'Fire', 'barukids': 'Fire', 'baruk': 'Fire', 'brotinhos kids': 'Fire', 'efraim': 'Fire',
-  'qahal kids': 'White', 'éden': 'White', 'dunamis': 'White', 'lírios': 'White', 'qahal': 'White', 'boas novas': 'White', 'holy spirit': 'White', 'naham': 'White', 'zion': 'White', 'áquila kids': 'White', 'revolution': 'White', 'be one': 'White', 'oliveiras': 'White', 'áquila': 'White', 'videira': 'White',
-  'mel kids': 'Titanium', 'rafá': 'Titanium', 'betel': 'Titanium', 'ágape': 'Titanium',
-  'ekballo': 'Legacy', 'galileu': 'Legacy', 'yeshua': 'Legacy', 'jesus people': 'Legacy',
-  'zoe kids': 'Black', 'avivah': 'Black', 'hope': 'Black', 'new mindinhos': 'Black', 'filipenses 4:8': 'Black', 'zoe': 'Black', 'filikids': 'Black', 'atos 29': 'Black', 'new mind': 'Black', 'hope kids': 'Black',
-  'razak': 'Diamante', 'kairós': 'Diamante', 'gideões': 'Diamante', 'hineni': 'Diamante', 'aba pai': 'Diamante', 'hágios': 'Diamante', 'kairós kids': 'Diamante',
-  'rei davi': 'Onix', 'kadosh': 'Onix', 'emaús': 'Onix', 'renovo': 'Onix',
-  'geração joão batista': 'Amarelo', 'herdeiros kids': 'Amarelo', 'nova geração eleita': 'Amarelo', 'geração hur kids': 'Amarelo', 'herdeiros da glória': 'Amarelo', 'geração hur': 'Amarelo',
-  'life kids': 'Azul', 'geração eleita kids': 'Azul', 'geração eleita': 'Azul', 'sal e luz': 'Azul', 'revigora': 'Azul', 'life': 'Azul', 'new life': 'Azul', 'revigora kids': 'Azul', 'cordeiro de deus': 'Azul', 'nações': 'Azul'
-};
+/** Rótulo para relatório cuja célula não está ligada a um setor no cadastro. */
+export const SEM_SETOR = 'Sem setor';
 
 export function converterItemParaLancamento(item: any, idx = 0): LancamentoTesouraria {
   const id = String(item.id || item.ID || item.Id || `rel-${Date.now()}-${idx}`);
@@ -152,7 +141,7 @@ export function converterItemParaLancamento(item: any, idx = 0): LancamentoTesou
     ? formatarDataBR(item.data_recebimento) 
     : (item.DATA_TESOURARIA || (isConfirmado ? dataBR : undefined));
 
-  const idTesoureiro = item.tesoureiro_id || item.ID_TESOUREIRO || (isConfirmado ? '4' : undefined);
+  const idTesoureiro = item.tesoureiro_id || item.ID_TESOUREIRO || undefined;
 
   // Parse celula, setor, and lider from item or observacao
   let celulaNome = '';
@@ -192,21 +181,6 @@ export function converterItemParaLancamento(item: any, idx = 0): LancamentoTesou
     ).trim();
   }
 
-  // Cross-reference with LISTA_CELULAS if cell is matched
-  if (celulaNome) {
-    const norm = celulaNome.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-    const matched = LISTA_CELULAS.find((c) => {
-      const cNorm = c.nome.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-      return norm.includes(cNorm) || cNorm.includes(norm);
-    });
-    if (matched) {
-      celulaNome = matched.nome;
-      if (!setor) setor = matched.setor;
-      if (!liderCelula) liderCelula = matched.lider;
-      if (!area) area = matched.area;
-    }
-  }
-
   // Fallback if empty in database
   if (!celulaNome) {
     celulaNome = `Célula #${idx + 1}`;
@@ -214,37 +188,19 @@ export function converterItemParaLancamento(item: any, idx = 0): LancamentoTesou
 
   if (item.setor || item.setor_nome || item.Setor) {
     setor = String(item.setor || item.setor_nome || item.Setor).trim();
-  } else if (celulaNome) {
-    const cNorm = celulaNome.toLowerCase().trim();
-    if (MAPA_CELULAS_SETORES[cNorm]) {
-      setor = MAPA_CELULAS_SETORES[cNorm];
-    }
   }
 
   if (!setor || setor === '-' || setor === 'undefined') {
-    setor = 'Safira';
+    setor = SEM_SETOR;
   }
 
   if (!liderCelula) liderCelula = String(item.lider || item.LiderCelula || item.responsavel_envio || '-').trim();
 
-  // Resolve the validator name accurately from idTesoureiro
+  // Nome de quem validou: vem do servidor (membros.nome do tesoureiro_id)
   let nomeTesoureiro: string | undefined = undefined;
   if (isConfirmado) {
     const rawNome = item.NomeTesoureiro || item.nome_tesoureiro;
-    if (rawNome && String(rawNome).toLowerCase() !== 'tesouraria') {
-      nomeTesoureiro = String(rawNome).trim();
-    } else {
-      const sId = String(idTesoureiro || '').trim().toLowerCase();
-      if (sId === '4' || sId === 'junio' || sId === 'jfonteles') {
-        nomeTesoureiro = 'Junio Fonteles';
-      } else if (sId.includes('developer')) {
-        nomeTesoureiro = 'Developer AppChurch';
-      } else if (sId === '1' || sId === 'admin') {
-        nomeTesoureiro = 'Administrador Geral';
-      } else {
-        nomeTesoureiro = 'Tesoureiro';
-      }
-    }
+    nomeTesoureiro = rawNome ? String(rawNome).trim() : 'Tesoureiro';
   }
 
   const numSemanaFinal = item.numero_semana !== undefined && item.numero_semana !== null
@@ -654,6 +610,7 @@ export const TreasuryService = {
       dia_semana: u.dia_semana ? String(u.dia_semana).trim() : null,
       lideres: Array.isArray(u.lideres) ? u.lideres : [],
       lider_nome: u.lider_nome ? String(u.lider_nome).trim() : null,
+      eh_celula: typeof u.eh_celula === 'boolean' ? u.eh_celula : null,
     }));
     memoryUnidades = lista;
     lastUnidadesFetch = now;

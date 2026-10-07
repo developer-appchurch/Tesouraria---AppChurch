@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { converterItemParaLancamento, MAPA_CELULAS_SETORES } from '@/lib/treasury-service';
+import { converterItemParaLancamento, SEM_SETOR } from '@/lib/treasury-service';
 
 /**
  * API da Tesouraria.
@@ -16,7 +16,6 @@ import { converterItemParaLancamento, MAPA_CELULAS_SETORES } from '@/lib/treasur
  * validação usa uma única ação ("painel_validacao") por período.
  */
 
-const SETORES_PADRAO = ['Safira', 'Fire', 'White', 'Black', 'Azul', 'Amarelo', 'Legacy', 'Onix', 'Diamante', 'Titanium'];
 const PAGE_SIZE = 1000;
 const MAX_ROWS = 20000;
 const CACHE_TTL_MS = 5 * 60 * 1000; // unidades e membros por igreja
@@ -356,21 +355,22 @@ function anoMesDoItem(dataRelatorio: any) {
   return { ano, mes };
 }
 
-function resolverSetor(u: Unidade | null | undefined, nomeCelula: string, observacao: any) {
-  let setor = u?.setor_nome;
-  if (!setor || setor === 'Safira') {
-    const cNorm = String(nomeCelula || '').toLowerCase().trim();
-    if (MAPA_CELULAS_SETORES[cNorm]) {
-      setor = MAPA_CELULAS_SETORES[cNorm];
-    } else {
-      const obs = String(observacao || '');
-      if (obs.toLowerCase().includes('setor:')) {
-        const match = obs.match(/setor:\s*([^|]+)/i);
-        if (match) setor = match[1].trim();
-      }
-    }
-  }
-  return setor || 'Safira';
+/** Setor = unidade pai da célula (cadastro da própria igreja). Sem pai: tenta a observação. */
+function resolverSetor(u: Unidade | null | undefined, observacao: any) {
+  if (u?.setor_nome) return u.setor_nome;
+  const match = String(observacao || '').match(/setor:\s*([^|]+)/i);
+  return match ? match[1].trim() : SEM_SETOR;
+}
+
+/** Setores da igreja: unidades pai das unidades da ponta (células). */
+function setoresDaIgreja(unidades: Map<string, Unidade>): string[] {
+  const pais = new Set<string>();
+  unidades.forEach((u) => u.pai_id && pais.add(String(u.pai_id)));
+  const setores = new Set<string>();
+  unidades.forEach((u) => {
+    if (!pais.has(String(u.id)) && u.setor_nome) setores.add(u.setor_nome);
+  });
+  return Array.from(setores).sort((a, b) => a.localeCompare(b, 'pt-BR'));
 }
 
 /** Lê os relatórios da igreja no período (filtro no banco) e já monta as linhas da tela. */
@@ -411,7 +411,7 @@ async function carregarRelatorios(
     const l = converterItemParaLancamento(item, idx);
     const uInfo = item.unidade_id ? unidadesMap.get(String(item.unidade_id)) : null;
     const nomeCelula = uInfo?.nome || l.celulaNome || `Célula #${idx + 1}`;
-    const setor = resolverSetor(uInfo, nomeCelula, item.observacao);
+    const setor = resolverSetor(uInfo, item.observacao);
     if (setorFiltro && setor.toLowerCase() !== setorFiltro) return;
 
     lista.push({
@@ -436,11 +436,11 @@ async function carregarRelatorios(
   return lista;
 }
 
-function resumir(lista: any[]) {
+function resumir(lista: any[], setoresBase: string[]) {
   let pendentes = 0;
   let confirmados = 0;
   const setores = new Map<string, number>();
-  SETORES_PADRAO.forEach((s) => setores.set(s, 0));
+  setoresBase.forEach((s) => setores.set(s, 0));
   lista.forEach((r) => {
     if (r.tesouraria_recebido) {
       confirmados++;
@@ -484,8 +484,11 @@ export async function POST(req: NextRequest) {
 
       // Tudo que a tela "Validar Relatórios" precisa, em UMA consulta por período
       case 'painel_validacao': {
-        const relatorios = await carregarRelatorios(supabase, igrejaId, { ano: params.ano, mes: params.mes });
-        const { resumo, setores } = resumir(relatorios);
+        const [relatorios, unidades] = await Promise.all([
+          carregarRelatorios(supabase, igrejaId, { ano: params.ano, mes: params.mes }),
+          getUnidadesMap(supabase, igrejaId),
+        ]);
+        const { resumo, setores } = resumir(relatorios, setoresDaIgreja(unidades));
         return NextResponse.json({ success: true, data: { resumo, setores, relatorios } });
       }
 
@@ -503,9 +506,21 @@ export async function POST(req: NextRequest) {
           carregarLideresPorUnidade(supabase, igrejaId),
         ]);
 
+        // Nível "célula" de cada igreja = o nivel_tipo de maior ordem (sem id fixo no código)
+        const { data: niveis } = await supabase.from('nivel_tipo').select('id, ordem').eq('igreja_id', igrejaId);
+        const nivelCelula = (niveis || []).reduce<{ id: string; ordem: number } | null>(
+          (maior, n: any) => (!maior || Number(n.ordem) > maior.ordem ? { id: String(n.id), ordem: Number(n.ordem) } : maior),
+          null
+        );
+
         const data = rows.map((u: any) => {
           const lids = lideresPorUnidade.get(String(u.id)) || [];
-          return { ...u, lideres: lids, lider_nome: lids.join(', ') || null };
+          return {
+            ...u,
+            eh_celula: nivelCelula && u.nivel_tipo_id ? String(u.nivel_tipo_id) === nivelCelula.id : null,
+            lideres: lids,
+            lider_nome: lids.join(', ') || null,
+          };
         });
 
         return NextResponse.json({ success: true, data });
@@ -638,18 +653,6 @@ export async function POST(req: NextRequest) {
       case 'relatorios_detalhados': {
         const data = await carregarRelatorios(supabase, igrejaId, params);
         return NextResponse.json({ success: true, data });
-      }
-
-      case 'resumo': {
-        const { resumo } = resumir(await carregarRelatorios(supabase, igrejaId, { ano: params.ano, mes: params.mes }));
-        return NextResponse.json({ success: true, data: resumo });
-      }
-
-      case 'setores_pendencias': {
-        const { setores } = resumir(
-          await carregarRelatorios(supabase, igrejaId, { ano: params.ano, mes: params.mes, somentePendentes: true })
-        );
-        return NextResponse.json({ success: true, data: setores });
       }
 
       case 'confirmar_individual':

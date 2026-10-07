@@ -5,18 +5,8 @@ export type ViewMode =
   | 'dashboard'
   | 'permissoes';
 
-export type SetorTipo = 
-  | 'Safira'
-  | 'Fire'
-  | 'White'
-  | 'Black'
-  | 'Azul'
-  | 'Amarelo'
-  | 'Legacy'
-  | 'Onix'
-  | 'Diamante'
-  | 'Titanium'
-  | string;
+/** Nome do setor (unidade pai da célula); vem do cadastro de cada igreja. */
+export type SetorTipo = string;
 
 export interface LancamentoTesouraria {
   id: string;
@@ -165,4 +155,6 @@ export interface UnidadeCadastrada {
   dia_semana?: string | null;
   lideres?: string[];
   lider_nome?: string | null;
+  /** true se a unidade é do nível "célula" da igreja (maior ordem em nivel_tipo) */
+  eh_celula?: boolean | null;
 }

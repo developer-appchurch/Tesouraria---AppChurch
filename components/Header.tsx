@@ -35,18 +35,6 @@ const MESES_HEADER = [
   { valor: '12', label: 'Dezembro' },
 ];
 
-const SETORES_PADRAO = [
-  'Safira',
-  'Fire',
-  'White',
-  'Azul',
-  'Amarelo',
-  'Black',
-  'Diamante',
-  'Legacy',
-  'Onix',
-  'Titanium',
-];
 
 export const Header: React.FC<HeaderProps> = ({
   currentView,
@@ -108,8 +96,7 @@ export const Header: React.FC<HeaderProps> = ({
 
   // Lista de setores válidos (sem a opção "todos")
   const listaSetores = useMemo(() => {
-    const base = setoresDisponiveis.length > 0 ? setoresDisponiveis : SETORES_PADRAO;
-    return base.filter(
+    return setoresDisponiveis.filter(
       (s) => s && s.toLowerCase() !== 'todos' && s.toLowerCase() !== 'todos os setores'
     );
   }, [setoresDisponiveis]);
@@ -236,7 +223,7 @@ export const Header: React.FC<HeaderProps> = ({
                   <select
                     value={
                       !setorSelecionado || setorSelecionado.toLowerCase() === 'todos' || setorSelecionado.toLowerCase() === 'todos os setores'
-                        ? listaSetores[0] || 'Safira'
+                        ? listaSetores[0] || ''
                         : setorSelecionado
                     }
                     onChange={(e) => onSelectSetor(e.target.value)}
