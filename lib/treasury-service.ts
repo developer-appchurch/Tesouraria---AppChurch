@@ -1,10 +1,9 @@
 import { getSupabaseClient } from './supabase';
-import { LancamentoTesouraria, PermissaoUsuario, AppChurchUser, MembroItem, UnidadeCadastrada, TesourariaPermissaoItem, MembroBuscaItem } from './types';
+import { LancamentoTesouraria, AppChurchUser, MembroItem, UnidadeCadastrada, TesourariaPermissaoItem, MembroBuscaItem } from './types';
 import { LISTA_CELULAS } from './celulas-data';
 
 // In-memory cache for high performance and reduced query consumption
 let memoryLancamentos: LancamentoTesouraria[] | null = null;
-let memoryPermissoes: PermissaoUsuario[] | null = null;
 let lastLancamentosFetch = 0;
 // Cache de relatórios por período ("ano|mes"): trocar de ano não devolve dados de outro ano
 const relatoriosCache = new Map<string, { data: LancamentoTesouraria[]; at: number }>();
@@ -24,7 +23,6 @@ function sincronizarCacheRelatorios() {
     relatoriosCache.set(chaveLancamentosAtual, { data: memoryLancamentos, at: lastLancamentosFetch });
   }
 }
-let lastPermissoesFetch = 0;
 let memoryUnidades: UnidadeCadastrada[] | null = null;
 let lastUnidadesFetch = 0;
 const CACHE_TTL_MS = 3 * 60 * 1000; // 3 minutes cache (no polling)
@@ -36,8 +34,6 @@ const limpadoresDeCache = new Set<() => void>();
 export function registrarLimpezaDeCache(limpar: () => void): void {
   limpadoresDeCache.add(limpar);
 }
-
-const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function formatarDataBR(val: any): string {
   if (!val) return '-';
@@ -246,8 +242,7 @@ export function converterItemParaLancamento(item: any, idx = 0): LancamentoTesou
       } else if (sId === '1' || sId === 'admin') {
         nomeTesoureiro = 'Administrador Geral';
       } else {
-        const found = memoryPermissoes?.find((p) => p.id === sId || p.user_id === sId);
-        nomeTesoureiro = found ? found.nome : 'Tesoureiro';
+        nomeTesoureiro = 'Tesoureiro';
       }
     }
   }
@@ -364,10 +359,8 @@ export const TreasuryService = {
     memoryLancamentos = null;
     relatoriosCache.clear();
     chaveLancamentosAtual = null;
-    memoryPermissoes = null;
     memoryUnidades = null;
     lastLancamentosFetch = 0;
-    lastPermissoesFetch = 0;
     lastUnidadesFetch = 0;
     limpadoresDeCache.forEach((limpar) => limpar());
   },
@@ -668,39 +661,6 @@ export const TreasuryService = {
   },
 
   /**
-   * Obtém setores / unidades cadastrados para a igreja na tabela 'unidades'
-   */
-  async fetchUnidades(
-    igrejaId?: string | number
-  ): Promise<{ success: boolean; data: string[]; error?: string }> {
-    try {
-      const supabase = getSupabaseClient();
-      // Só as colunas usadas (nunca select('*'): evita trazer fotos e campos pesados)
-      let query = supabase.from('unidades').select('id, nome');
-
-      if (igrejaId && String(igrejaId).trim()) {
-        query = query.eq('igreja_id', String(igrejaId).trim());
-      }
-
-      const { data, error } = await query;
-      if (error) {
-        console.warn('Aviso ao consultar tabela unidades:', error.message);
-        return { success: false, data: [], error: error.message };
-      }
-
-      const setoresSet = new Set<string>();
-      (data || []).forEach((u: any) => {
-        const nome = String(u.nome || '').trim();
-        if (nome && nome !== '-' && nome !== 'undefined' && nome !== 'null') setoresSet.add(nome);
-      });
-      return { success: true, data: Array.from(setoresSet).sort() };
-    } catch (err: any) {
-      console.warn('Erro ao consultar unidades no Supabase:', err);
-      return { success: false, data: [], error: err.message };
-    }
-  },
-
-  /**
    * Valida relatório (via /api/treasury). O tesoureiro registrado é o usuário logado,
    * identificado pelo servidor a partir da sessão.
    */
@@ -852,90 +812,6 @@ export const TreasuryService = {
   },
 
   /**
-   * Busca lista de células cadastradas
-   */
-  getCelulas() {
-    return LISTA_CELULAS;
-  },
-
-  /**
-   * Busca usuários e permissões da tabela permissoes no Supabase
-   */
-  async fetchPermissoes(forceRefresh = false): Promise<{ data: PermissaoUsuario[]; error?: string }> {
-    const now = Date.now();
-    if (!forceRefresh && memoryPermissoes && now - lastPermissoesFetch < CACHE_TTL_MS) {
-      return { data: memoryPermissoes };
-    }
-
-    try {
-      const supabase = getSupabaseClient();
-      const { data, error } = await supabase
-        .from('permissoes')
-        .select('id, codigo, nome, modulo, descricao, criado_em');
-
-      if (!error && data && data.length > 0) {
-        const formatted: PermissaoUsuario[] = data.map((item: any) => ({
-          id: String(item.id || ''),
-          user_id: String(item.id || ''),
-          email: `${String(item.codigo || 'user').replace(':', '.')}@pazchurch.com`,
-          nome: String(item.nome || item.descricao || 'Usuário'),
-          cargo: String(item.modulo || 'Tesouraria'),
-          congregacao_nome: 'Safira',
-          setor: 'Safira',
-          perfil: 'tesoureiro_congregacao',
-          acesso_tesouraria_ativo: true,
-          permissoes: {
-            validar_relatorios: true,
-            rejeitar_relatorios: true,
-            editar_envelopes: true,
-            visualizar_dashboard: true,
-            gerenciar_permissoes: false,
-            exportar_dados: true,
-            excluir_relatorios: false,
-            auditar_conferencia: true,
-          },
-          criado_em: String(item.criado_em || new Date().toISOString().slice(0, 10)),
-        }));
-
-        memoryPermissoes = formatted;
-        lastPermissoesFetch = now;
-        return { data: formatted };
-      }
-      return { data: [] };
-    } catch (err: any) {
-      console.warn('Erro ao consultar permissoes:', err);
-      return { data: memoryPermissoes || [], error: err.message };
-    }
-  },
-
-  /**
-   * Atualiza permissões de um usuário
-   */
-  async updatePermissaoUsuario(usuario: PermissaoUsuario): Promise<boolean> {
-    if (memoryPermissoes) {
-      memoryPermissoes = memoryPermissoes.map((u) => (u.id === usuario.id ? usuario : u));
-    }
-
-    try {
-      const isUUID = UUID_REGEX.test(usuario.id);
-      if (isUUID) {
-        const supabase = getSupabaseClient();
-        await supabase
-          .from('permissoes')
-          .update({
-            nome: usuario.nome,
-            descricao: usuario.cargo,
-          })
-          .eq('id', usuario.id);
-      }
-      return true;
-    } catch (err) {
-      console.warn('Erro ao atualizar permissão no Supabase:', err);
-      return false;
-    }
-  },
-
-  /**
    * Lista todos os membros com acesso concedido na tabela tesouraria_permissao
    */
   async fetchTesourariaPermissoes(): Promise<{ success: boolean; data: TesourariaPermissaoItem[]; error?: string }> {
@@ -973,28 +849,4 @@ export const TreasuryService = {
     return { success: Boolean(res.success), error: res.error };
   },
 
-  /**
-   * Cadastra novo usuário na lista de permissões (legado)
-   */
-  async createPermissaoUsuario(novoUsuario: PermissaoUsuario): Promise<boolean> {
-    if (memoryPermissoes) {
-      memoryPermissoes = [novoUsuario, ...memoryPermissoes];
-    }
-
-    try {
-      const supabase = getSupabaseClient();
-      await supabase.from('permissoes').insert([
-        {
-          codigo: `user:${novoUsuario.email.split('@')[0]}`,
-          nome: novoUsuario.nome,
-          modulo: novoUsuario.cargo,
-          descricao: novoUsuario.cargo,
-        },
-      ]);
-      return true;
-    } catch (err) {
-      console.warn('Erro ao cadastrar permissão no Supabase:', err);
-      return false;
-    }
-  },
 };
