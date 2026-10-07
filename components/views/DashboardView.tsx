@@ -133,9 +133,17 @@ function ehMesFuturo(ano: number, mes: number): boolean {
   return ano > hoje.getFullYear() || (ano === hoje.getFullYear() && mes > hoje.getMonth() + 1);
 }
 
-/** Percentual de relatórios validados sobre os previstos (limitado a 100%). */
-function percentualSobrePrevistos(validados: number, previstos: number): number {
-  return previstos > 0 ? Math.min(100, Math.round((validados / previstos) * 100)) : 0;
+/**
+ * Base do percentual: o previsto ou, se lançaram mais que o previsto, o total lançado
+ * (todo relatório lançado precisa ser validado pela tesouraria).
+ */
+function baseDoPercentual(previstos: number, enviados: number): number {
+  return Math.max(previstos, enviados);
+}
+
+/** Percentual de relatórios validados sobre a base (previstos ou lançados, o maior). */
+function percentualValidados(validados: number, base: number): number {
+  return base > 0 ? Math.min(100, Math.round((validados / base) * 100)) : 0;
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
@@ -337,8 +345,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
         const totalRelatorios = doAnoEMes.reduce((acc, a) => acc + a.enviados, 0);
         const validados = doAnoEMes.reduce((acc, a) => acc + a.validados, 0);
-        // % = validados pela tesouraria / previstos para o período
-        const perc = percentualSobrePrevistos(validados, previstos);
+        // % = validados pela tesouraria / máx(previstos, lançados) do período
+        const base = baseDoPercentual(previstos, totalRelatorios);
+        const perc = percentualValidados(validados, base);
 
         return {
           nome: String(anoItem),
@@ -349,6 +358,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           validados,
           totalRelatorios,
           previstos,
+          base,
           perc,
         };
       });
@@ -370,8 +380,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
       const totalRelatorios = doMes.reduce((acc, a) => acc + a.enviados, 0);
       const validados = doMes.reduce((acc, a) => acc + a.validados, 0);
-      // % = validados pela tesouraria / previstos para o mês
-      const perc = percentualSobrePrevistos(validados, previstos);
+      // % = validados pela tesouraria / máx(previstos, lançados) do mês
+      const base = baseDoPercentual(previstos, totalRelatorios);
+      const perc = percentualValidados(validados, base);
 
       return {
         nome: nomeAbrev,
@@ -382,6 +393,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         validados,
         totalRelatorios,
         previstos,
+        base,
         perc,
       };
     });
@@ -559,14 +571,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       const enviados = enviadosPorSetor.get(nome) || 0;
       const validados = validadosPorSetor.get(nome) || 0;
 
-      // % = validados pela tesouraria / previstos do setor no período
-      // (previstos = células ativas do setor x máx(4, ocorrências do dia de reunião no mês))
-      const perc = percentualSobrePrevistos(validados, previstos);
+      // % = validados pela tesouraria / máx(previstos, lançados) do setor no período
+      // (previstos = células ativas do setor x máx(4, ocorrências do dia de reunião no mês);
+      //  se o setor lançou mais que o previsto, a base é o total lançado)
+      const base = baseDoPercentual(previstos, enviados);
+      const perc = percentualValidados(validados, base);
 
-      return { nome, ativas, enviados, validados, previstos, perc };
+      return { nome, ativas, enviados, validados, previstos, base, perc };
     });
 
-    lista.sort((a, b) => b.perc - a.perc || b.validados - a.validados || b.previstos - a.previstos || b.ativas - a.ativas);
+    lista.sort((a, b) => b.perc - a.perc || b.validados - a.validados || b.base - a.base || b.ativas - a.ativas);
     return lista;
   }, [unidadesCadastradas, unidadesMaisBaixas, agregados, agregadosPeriodo, previstosNoPeriodo]);
 
@@ -574,8 +588,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const totalValidadosMes = agregadosPeriodo.reduce((acc, a) => acc + a.validados, 0);
   const percPrevistosMes =
     relatoriosPrevistos > 0 ? Math.min(100, Math.round((totalLancadosMes / relatoriosPrevistos) * 100)) : 0;
-  const percValidadosMes =
-    relatoriosPrevistos > 0 ? Math.min(100, Math.round((totalValidadosMes / relatoriosPrevistos) * 100)) : 0;
+  // Validados: base = previstos ou lançados (o maior), igual ao ranking e ao gráfico
+  const baseValidadosMes = baseDoPercentual(relatoriosPrevistos, totalLancadosMes);
+  const percValidadosMes = percentualValidados(totalValidadosMes, baseValidadosMes);
 
   const corPrevistosMes = getCorPercentual(percPrevistosMes);
   const corValidadosMes = getCorPercentual(percValidadosMes);
@@ -811,7 +826,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     : 'Relatórios Recebidos Mês a Mês (%)'}
                 </h3>
                 <p className="text-[11px] text-slate-400 mt-0.5">
-                  % de relatórios validados pela tesouraria em relação aos previstos (células ativas × mín. 4 por mês)
+                  % de relatórios validados pela tesouraria sobre os previstos (células ativas × mín. 4 por mês) ou sobre os lançados, se maior
                 </p>
               </div>
             </div>
@@ -832,7 +847,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       key={m.nome}
                       data-col-index={idx}
                       className="flex flex-col items-center h-full justify-end group relative"
-                      title={`${m.nome}: ${m.validados} validados de ${m.previstos} previstos (${m.perc}%) • ${m.totalRelatorios} enviados`}
+                      title={`${m.nome}: ${m.validados} validados de ${m.base} (${m.perc}%) • ${m.previstos} previstos, ${m.totalRelatorios} lançados`}
                     >
                       <div className="h-5 flex items-center justify-center mb-1">
                         {m.perc > 0 && (
@@ -898,7 +913,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <span className={`font-bold font-mono ${corValidadosMes.text}`}>{percValidadosMes}%</span>
               </div>
               <p className="text-[10px] text-slate-400 mb-1.5 font-mono">
-                Confirmados pela Tesouraria ({totalValidadosMes} de {relatoriosPrevistos} previstos)
+                Confirmados pela Tesouraria ({totalValidadosMes} de {baseValidadosMes}{baseValidadosMes > relatoriosPrevistos ? ' lançados' : ' previstos'})
               </p>
               <div className="w-full bg-[#181b2a] rounded-sm h-5 overflow-hidden p-0.5 border border-[#303752]">
                 <div
@@ -954,9 +969,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     <div className="flex items-center gap-2 shrink-0">
                       <span
                         className="text-[10px] text-slate-400 font-mono"
-                        title={`${s.validados} validados de ${s.previstos} previstos • ${s.enviados} enviados`}
+                        title={`${s.validados} validados de ${s.base} • ${s.previstos} previstos, ${s.enviados} lançados`}
                       >
-                        ({s.validados}/{s.previstos})
+                        ({s.validados}/{s.base})
                       </span>
                       <span className={`font-bold text-sm shrink-0 pl-1 font-mono ${cor.text}`}>
                         {s.perc}%
