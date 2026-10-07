@@ -102,20 +102,16 @@ function getContagemDiasSemanaNoMes(ano: number, mes: number): number[] {
   return contagem;
 }
 
-/**
- * Retorna quantas semanas o mês filtrado tem (calendário: do primeiro ao último dia do mês).
- */
-function getSemanasDoMes(ano: number, mes: number): number {
-  const totalDias = new Date(ano, mes, 0).getDate();
-  const primeiroDiaSemana = new Date(ano, mes - 1, 1).getDay(); // 0 = Domingo
-  return Math.ceil((primeiroDiaSemana + totalDias) / 7);
-}
+/** Mínimo de relatórios que cada célula ativa deve entregar por mês (1 por semana). */
+const MINIMO_RELATORIOS_POR_CELULA_MES = 4;
 
 /**
- * Calcula quantos encontros uma lista de unidades ativas de menor nível teria no mês e ano.
- * Regras:
- * 1. Para cada unidade com dia_semana cadastrado: quantas vezes aquele dia da semana ocorre no mês filtrado.
- * 2. Se a unidade cumprir os requisitos mas não tiver dia da semana cadastrado: em relação a quantas semanas o mês filtrado tem.
+ * Relatórios previstos no mês para uma lista de células ativas.
+ * Regras por célula:
+ * - Mês anterior ao início da célula (inicio_em): 0 — ela ainda não existia.
+ * - Mês em que a célula começou: só as reuniões a partir da data de início
+ *   (ocorrências do dia de reunião; sem dia cadastrado, as semanas restantes, até 4).
+ * - Demais meses: no mínimo 4 relatórios; 5 se o dia da reunião ocorrer 5 vezes no mês.
  */
 function calcularEncontrosPrevistosMes(
   ano: number,
@@ -124,18 +120,53 @@ function calcularEncontrosPrevistosMes(
 ): number {
   if (!unidades || unidades.length === 0) return 0;
   const contagemDias = getContagemDiasSemanaNoMes(ano, mes);
-  const semanasNoMes = getSemanasDoMes(ano, mes);
+  const diasNoMes = new Date(ano, mes, 0).getDate();
+  const inicioDoMes = `${ano}-${String(mes).padStart(2, '0')}-01`;
+  const fimDoMes = `${ano}-${String(mes).padStart(2, '0')}-${String(diasNoMes).padStart(2, '0')}`;
 
   let total = 0;
   for (const u of unidades) {
     const dow = getDiaSemanaIndex(u.dia_semana);
-    if (dow !== null) {
-      total += contagemDias[dow];
-    } else {
-      total += semanasNoMes;
+    const inicio = u.inicio_em ? String(u.inicio_em).slice(0, 10) : null;
+
+    if (inicio && inicio > fimDoMes) continue; // ainda não existia neste mês
+
+    if (inicio && inicio > inicioDoMes) {
+      // Começou no meio deste mês: conta só a partir do dia de início
+      const diaInicio = Number(inicio.slice(8, 10));
+      if (dow !== null) {
+        for (let d = diaInicio; d <= diasNoMes; d++) {
+          if (new Date(ano, mes - 1, d).getDay() === dow) total++;
+        }
+      } else {
+        total += Math.min(MINIMO_RELATORIOS_POR_CELULA_MES, Math.ceil((diasNoMes - diaInicio + 1) / 7));
+      }
+      continue;
     }
+
+    const ocorrencias = dow !== null ? contagemDias[dow] : 0;
+    total += Math.max(MINIMO_RELATORIOS_POR_CELULA_MES, ocorrencias);
   }
   return total;
+}
+
+/** Mês ainda não começou: não entra no previsto (não há como ter entregue). */
+function ehMesFuturo(ano: number, mes: number): boolean {
+  const hoje = new Date();
+  return ano > hoje.getFullYear() || (ano === hoje.getFullYear() && mes > hoje.getMonth() + 1);
+}
+
+/**
+ * Base do percentual: o previsto ou, se lançaram mais que o previsto, o total lançado
+ * (todo relatório lançado precisa ser validado pela tesouraria).
+ */
+function baseDoPercentual(previstos: number, enviados: number): number {
+  return Math.max(previstos, enviados);
+}
+
+/** Percentual de relatórios validados sobre a base (previstos ou lançados, o maior). */
+function percentualValidados(validados: number, base: number): number {
+  return base > 0 ? Math.min(100, Math.round((validados / base) * 100)) : 0;
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
@@ -298,61 +329,28 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   // Contagem de células ativas (unidades de menor nível ativas)
   const celulasAtivas = unidadesMaisBaixas.length;
 
-  const fatorMeses = useMemo(() => {
-    if (isTodosMeses) {
-      return isTodosAnos || Number(anoSelecionado) === new Date().getFullYear()
-        ? new Date().getMonth() + 1
-        : 12;
-    }
-    return 1;
-  }, [isTodosMeses, isTodosAnos, anoSelecionado]);
-
-  // Cálculo de relatórios previstos:
-  // Quantos encontros de cada unidade de nível mais baixo ativa teriam dentro do mês filtrado:
-  // - Para unidades com dia_semana: quantas vezes aquele dia da semana ocorre dentro do mês.
-  // - Se não tiver dia_semana cadastrado: quantas semanas o mês filtrado tem.
-  const relatoriosPrevistos = useMemo(() => {
-    if (unidadesMaisBaixas.length === 0) {
-      const multAnos = isTodosAnos ? Math.max(1, anosDisponiveis.length) : 1;
-      return celulasAtivas * 4 * fatorMeses * multAnos;
-    }
-
+  // Meses (ano, mês) cobertos pelo filtro atual, sem meses que ainda não começaram
+  const mesesDoPeriodo = useMemo(() => {
     const anoEfetivo = Number(anoSelecionado) || new Date().getFullYear();
+    const anos = isTodosAnos ? anosDisponiveis : [anoEfetivo];
+    const meses = isTodosMeses ? Array.from({ length: 12 }, (_, i) => i + 1) : [numMesSelecionado || new Date().getMonth() + 1];
+    const lista: { ano: number; mes: number }[] = [];
+    anos.forEach((ano) => meses.forEach((mes) => !ehMesFuturo(Number(ano), mes) && lista.push({ ano: Number(ano), mes })));
+    return lista;
+  }, [isTodosAnos, anosDisponiveis, anoSelecionado, isTodosMeses, numMesSelecionado]);
 
-    if (isTodosMeses) {
-      const anos = isTodosAnos ? anosDisponiveis : [anoEfetivo];
-      let total = 0;
-      for (const anoItem of anos) {
-        const anoNum = Number(anoItem) || new Date().getFullYear();
-        const maxMes = anoNum === new Date().getFullYear() ? new Date().getMonth() + 1 : 12;
-        for (let m = 1; m <= maxMes; m++) {
-          total += calcularEncontrosPrevistosMes(anoNum, m, unidadesMaisBaixas);
-        }
-      }
-      return total;
-    }
+  // Relatórios previstos no período para um grupo de células (todas, ou as de um setor)
+  const previstosNoPeriodo = useCallback(
+    (celulas: UnidadeCadastrada[]) =>
+      mesesDoPeriodo.reduce((acc, { ano, mes }) => acc + calcularEncontrosPrevistosMes(ano, mes, celulas), 0),
+    [mesesDoPeriodo]
+  );
 
-    const mesEfetivo = numMesSelecionado > 0 ? numMesSelecionado : new Date().getMonth() + 1;
-
-    if (isTodosAnos) {
-      let total = 0;
-      for (const anoItem of anosDisponiveis) {
-        total += calcularEncontrosPrevistosMes(Number(anoItem), mesEfetivo, unidadesMaisBaixas);
-      }
-      return total;
-    }
-
-    return calcularEncontrosPrevistosMes(anoEfetivo, mesEfetivo, unidadesMaisBaixas);
-  }, [
-    unidadesMaisBaixas,
-    celulasAtivas,
-    fatorMeses,
-    isTodosAnos,
-    isTodosMeses,
-    anoSelecionado,
-    numMesSelecionado,
-    anosDisponiveis,
-  ]);
+  // Previstos do período: células ativas x máx(4, ocorrências do dia de reunião no mês)
+  const relatoriosPrevistos = useMemo(
+    () => previstosNoPeriodo(unidadesMaisBaixas),
+    [previstosNoPeriodo, unidadesMaisBaixas]
+  );
 
   // Dados do gráfico
   const mesesGrafico = useMemo(() => {
@@ -363,15 +361,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
         const esp = somarReais(doAnoEMes, (a) => a.especie_validado);
         const pix = somarReais(doAnoEMes, (a) => a.pix_validado);
-        const previstos =
-          unidadesMaisBaixas.length > 0
-            ? calcularEncontrosPrevistosMes(anoItem, Number(numMesSelecionado) || 1, unidadesMaisBaixas)
-            : celulasAtivas * 4;
+        const mesItem = Number(numMesSelecionado) || 1;
+        const previstos = ehMesFuturo(anoItem, mesItem)
+          ? 0
+          : calcularEncontrosPrevistosMes(anoItem, mesItem, unidadesMaisBaixas);
 
         const totalRelatorios = doAnoEMes.reduce((acc, a) => acc + a.enviados, 0);
         const validados = doAnoEMes.reduce((acc, a) => acc + a.validados, 0);
-        // Porcentagem calculada em relação ao total de relatórios e o total validado dentro do período
-        const perc = totalRelatorios > 0 ? Math.min(100, Math.round((validados / totalRelatorios) * 100)) : 0;
+        // % = validados pela tesouraria / máx(previstos, lançados) do período
+        const base = baseDoPercentual(previstos, totalRelatorios);
+        const perc = percentualValidados(validados, base);
 
         return {
           nome: String(anoItem),
@@ -382,6 +381,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           validados,
           totalRelatorios,
           previstos,
+          base,
           perc,
         };
       });
@@ -394,25 +394,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       const esp = somarReais(doMes, (a) => a.especie_validado);
       const pix = somarReais(doMes, (a) => a.pix_validado);
 
-      let previstos = 0;
-      if (unidadesMaisBaixas.length > 0) {
-        if (isTodosAnos) {
-          for (const anoItem of anosDisponiveis) {
-            previstos += calcularEncontrosPrevistosMes(Number(anoItem), mesNum, unidadesMaisBaixas);
-          }
-        } else {
-          const anoEfetivo = Number(anoSelecionado) || new Date().getFullYear();
-          previstos = calcularEncontrosPrevistosMes(anoEfetivo, mesNum, unidadesMaisBaixas);
-        }
-      } else {
-        const multAnos = isTodosAnos ? Math.max(1, anosDisponiveis.length) : 1;
-        previstos = celulasAtivas * 4 * multAnos;
-      }
+      const anosDoMes = isTodosAnos ? anosDisponiveis : [Number(anoSelecionado) || new Date().getFullYear()];
+      const previstos = anosDoMes.reduce(
+        (acc, anoItem) =>
+          ehMesFuturo(Number(anoItem), mesNum) ? acc : acc + calcularEncontrosPrevistosMes(Number(anoItem), mesNum, unidadesMaisBaixas),
+        0
+      );
 
       const totalRelatorios = doMes.reduce((acc, a) => acc + a.enviados, 0);
       const validados = doMes.reduce((acc, a) => acc + a.validados, 0);
-      // Porcentagem calculada em relação ao total de relatórios e o total validado dentro do período
-      const perc = totalRelatorios > 0 ? Math.min(100, Math.round((validados / totalRelatorios) * 100)) : 0;
+      // % = validados pela tesouraria / máx(previstos, lançados) do mês
+      const base = baseDoPercentual(previstos, totalRelatorios);
+      const perc = percentualValidados(validados, base);
 
       return {
         nome: nomeAbrev,
@@ -423,6 +416,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         validados,
         totalRelatorios,
         previstos,
+        base,
         perc,
       };
     });
@@ -432,7 +426,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     agregados,
     numMesSelecionado,
     unidadesMaisBaixas,
-    celulasAtivas,
     isTodosAnos,
     anoSelecionado,
   ]);
@@ -591,38 +584,36 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
     const lista = Array.from(todosSetores).map((nome) => {
       // Contagem de células ativas do setor com as mesmas regras rigorosas de células ativas da igreja
-      const ativas = unidadesMaisBaixas.filter((u) => {
+      const celulasDoSetor = unidadesMaisBaixas.filter((u) => {
         const nomeSetor = (mapaSetoresPorId.get(u.pai_id || '') || '').trim();
         return nomeSetor.toLowerCase() === nome.toLowerCase();
-      }).length;
+      });
+      const ativas = celulasDoSetor.length;
+      const previstos = previstosNoPeriodo(celulasDoSetor);
 
       const enviados = enviadosPorSetor.get(nome) || 0;
       const validados = validadosPorSetor.get(nome) || 0;
 
-      // Porcentagem calculada estritamente em relação à quantidade de relatórios validados e os relatórios enviados
-      let perc = 0;
-      if (enviados > 0) {
-        perc = Math.min(100, Math.round((validados / enviados) * 100));
-      }
+      // % = validados pela tesouraria / máx(previstos, lançados) do setor no período
+      // (previstos = células ativas do setor x máx(4, ocorrências do dia de reunião no mês);
+      //  se o setor lançou mais que o previsto, a base é o total lançado)
+      const base = baseDoPercentual(previstos, enviados);
+      const perc = percentualValidados(validados, base);
 
-      return { nome, ativas, enviados, validados, perc };
+      return { nome, ativas, enviados, validados, previstos, base, perc };
     });
 
-    lista.sort((a, b) => b.perc - a.perc || b.validados - a.validados || b.enviados - a.enviados || b.ativas - a.ativas);
+    lista.sort((a, b) => b.perc - a.perc || b.validados - a.validados || b.base - a.base || b.ativas - a.ativas);
     return lista;
-  }, [
-    unidadesCadastradas,
-    unidadesMaisBaixas,
-    agregados,
-    agregadosPeriodo,
-  ]);
+  }, [unidadesCadastradas, unidadesMaisBaixas, agregados, agregadosPeriodo, previstosNoPeriodo]);
 
   const totalLancadosMes = agregadosPeriodo.reduce((acc, a) => acc + a.enviados, 0);
   const totalValidadosMes = agregadosPeriodo.reduce((acc, a) => acc + a.validados, 0);
   const percPrevistosMes =
     relatoriosPrevistos > 0 ? Math.min(100, Math.round((totalLancadosMes / relatoriosPrevistos) * 100)) : 0;
-  const percValidadosMes =
-    relatoriosPrevistos > 0 ? Math.min(100, Math.round((totalValidadosMes / relatoriosPrevistos) * 100)) : 0;
+  // Validados: base = previstos ou lançados (o maior), igual ao ranking e ao gráfico
+  const baseValidadosMes = baseDoPercentual(relatoriosPrevistos, totalLancadosMes);
+  const percValidadosMes = percentualValidados(totalValidadosMes, baseValidadosMes);
 
   const corPrevistosMes = getCorPercentual(percPrevistosMes);
   const corValidadosMes = getCorPercentual(percValidadosMes);
@@ -858,7 +849,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     : 'Relatórios Recebidos Mês a Mês (%)'}
                 </h3>
                 <p className="text-[11px] text-slate-400 mt-0.5">
-                  % de relatórios validados em relação ao total de relatórios dentro do período
+                  % de relatórios validados pela tesouraria sobre os previstos (células ativas × mín. 4 por mês, a partir do início de cada célula) ou sobre os lançados, se maior
                 </p>
               </div>
             </div>
@@ -879,7 +870,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       key={m.nome}
                       data-col-index={idx}
                       className="flex flex-col items-center h-full justify-end group relative"
-                      title={`${m.nome}: ${m.validados} validados de ${m.totalRelatorios} relatórios (${m.perc}%)`}
+                      title={`${m.nome}: ${m.validados} validados de ${m.base} (${m.perc}%) • ${m.previstos} previstos, ${m.totalRelatorios} lançados`}
                     >
                       <div className="h-5 flex items-center justify-center mb-1">
                         {m.perc > 0 && (
@@ -945,7 +936,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <span className={`font-bold font-mono ${corValidadosMes.text}`}>{percValidadosMes}%</span>
               </div>
               <p className="text-[10px] text-slate-400 mb-1.5 font-mono">
-                Confirmados pela Tesouraria ({totalValidadosMes} de {relatoriosPrevistos} previstos)
+                Confirmados pela Tesouraria ({totalValidadosMes} de {baseValidadosMes}{baseValidadosMes > relatoriosPrevistos ? ' lançados' : ' previstos'})
               </p>
               <div className="w-full bg-[#181b2a] rounded-sm h-5 overflow-hidden p-0.5 border border-[#303752]">
                 <div
@@ -962,7 +953,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <div>
                 <h3 className="text-sm font-bold text-white">Ranking por Setores</h3>
                 <p className="text-[10px] text-slate-400 mt-0.5">
-                  ({isTodosMeses ? 'Todos os Meses' : mesSelecionado}/{isTodosAnos ? 'Todos os Anos' : anoSelecionado}) • Validados / Enviados
+                  ({isTodosMeses ? 'Todos os Meses' : mesSelecionado}/{isTodosAnos ? 'Todos os Anos' : anoSelecionado}) • Validados / Previstos
                 </p>
               </div>
               <div className="flex items-center gap-2 text-[10px] font-semibold bg-[#1a1e30] px-2 py-1 rounded-lg border border-[#303752] self-start sm:self-auto shrink-0">
@@ -999,8 +990,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       </span>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
-                      <span className="text-[10px] text-slate-400 font-mono">
-                        ({s.validados}/{s.enviados})
+                      <span
+                        className="text-[10px] text-slate-400 font-mono"
+                        title={`${s.validados} validados de ${s.base} • ${s.previstos} previstos, ${s.enviados} lançados`}
+                      >
+                        ({s.validados}/{s.base})
                       </span>
                       <span className={`font-bold text-sm shrink-0 pl-1 font-mono ${cor.text}`}>
                         {s.perc}%
