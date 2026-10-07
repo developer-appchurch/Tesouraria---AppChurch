@@ -153,44 +153,58 @@ async function buscarTodos<T = any>(montarConsulta: () => any): Promise<T[]> {
 const unidadesCache = new Map<string, { map: Map<string, Unidade>; at: number }>();
 const membrosCache = new Map<string, { map: Map<string, string>; at: number }>();
 
+/**
+ * Nomes dos líderes por unidade, SOMENTE da igreja informada.
+ * unidade_lideres não tem igreja_id: o filtro é feito pelo join com unidades.
+ * Membros são paginados (o Supabase devolve no máx. 1000 linhas por consulta).
+ */
+async function carregarLideresPorUnidade(supabase: SupabaseClient, igrejaId: string) {
+  const [lideres, membros] = await Promise.all([
+    buscarTodos<any>(() =>
+      supabase
+        .from('unidade_lideres')
+        .select('id, unidade_id, pessoa_id, unidades!inner(igreja_id)')
+        .eq('ativo', true)
+        .eq('unidades.igreja_id', igrejaId)
+        .order('id')
+    ),
+    buscarTodos<any>(() =>
+      supabase.from('membros').select('id, nome, unidade_id, funcao').eq('igreja_id', igrejaId).order('id')
+    ),
+  ]);
+
+  const nomes = new Map<string, string>();
+  membros.forEach((m) => {
+    if (m.id && m.nome) nomes.set(String(m.id), String(m.nome).trim());
+  });
+
+  const porUnidade = new Map<string, string[]>();
+  const adicionar = (unidadeId: string, nome: string) => {
+    const lista = porUnidade.get(unidadeId) || [];
+    if (!lista.includes(nome)) lista.push(nome);
+    porUnidade.set(unidadeId, lista);
+  };
+  lideres.forEach((ul) => {
+    const nome = nomes.get(String(ul.pessoa_id));
+    if (nome) adicionar(String(ul.unidade_id), nome);
+  });
+  membros.forEach((m) => {
+    if (m.unidade_id && m.nome && String(m.funcao || '').toLowerCase().includes('lider')) {
+      adicionar(String(m.unidade_id), String(m.nome).trim());
+    }
+  });
+  return porUnidade;
+}
+
 async function getUnidadesMap(supabase: SupabaseClient, igrejaId: string) {
   const c = unidadesCache.get(igrejaId);
   if (c && Date.now() - c.at < CACHE_TTL_MS) return c.map;
-  const [rows, unidLideresRes, membrosRes] = await Promise.all([
+  const [rows, lideresPorUnidade] = await Promise.all([
     buscarTodos<Unidade>(() =>
       supabase.from('unidades').select('id, nome, pai_id').eq('igreja_id', igrejaId).order('id')
     ),
-    supabase.from('unidade_lideres').select('unidade_id, pessoa_id, papel, ativo').eq('ativo', true),
-    supabase.from('membros').select('id, nome, unidade_id, funcao').eq('igreja_id', igrejaId),
+    carregarLideresPorUnidade(supabase, igrejaId),
   ]);
-
-  const membrosMap = new Map<string, string>();
-  (membrosRes.data || []).forEach((m: any) => {
-    if (m.id && m.nome) membrosMap.set(String(m.id), String(m.nome).trim());
-  });
-
-  const lideresPorUnidade = new Map<string, string[]>();
-  (unidLideresRes.data || []).forEach((ul: any) => {
-    const nome = membrosMap.get(String(ul.pessoa_id));
-    if (nome) {
-      const uId = String(ul.unidade_id);
-      if (!lideresPorUnidade.has(uId)) lideresPorUnidade.set(uId, []);
-      if (!lideresPorUnidade.get(uId)!.includes(nome)) {
-        lideresPorUnidade.get(uId)!.push(nome);
-      }
-    }
-  });
-
-  (membrosRes.data || []).forEach((m: any) => {
-    if (m.unidade_id && m.funcao && String(m.funcao).toLowerCase().includes('lider') && m.nome) {
-      const uId = String(m.unidade_id);
-      const nome = String(m.nome).trim();
-      if (!lideresPorUnidade.has(uId)) lideresPorUnidade.set(uId, []);
-      if (!lideresPorUnidade.get(uId)!.includes(nome)) {
-        lideresPorUnidade.get(uId)!.push(nome);
-      }
-    }
-  });
 
   const map = new Map<string, Unidade>();
   rows.forEach((u) => {
@@ -381,54 +395,22 @@ export async function POST(req: NextRequest) {
       }
 
       case 'listar_unidades': {
-        const igrejaAlvo = params.igreja_id || igrejaId || 'ff600f5f-b91f-4826-bde2-3976e718877c';
-        const [rows, unidLideresRes, membrosRes] = await Promise.all([
+        // Sempre a igreja da sessão: nunca aceitar igreja_id vindo do navegador
+        const [rows, lideresPorUnidade] = await Promise.all([
           buscarTodos<any>(() =>
             supabase
               .from('unidades')
               .select('id, nome, pai_id, ativo, nivel_tipo_id, igreja_id, dia_semana')
-              .eq('igreja_id', igrejaAlvo)
+              .eq('igreja_id', igrejaId)
               .order('nome', { ascending: true })
+              .order('id', { ascending: true })
           ),
-          supabase.from('unidade_lideres').select('unidade_id, pessoa_id, papel, ativo').eq('ativo', true),
-          supabase.from('membros').select('id, nome, unidade_id, funcao').eq('igreja_id', igrejaAlvo),
+          carregarLideresPorUnidade(supabase, igrejaId),
         ]);
-
-        const membrosMap = new Map<string, string>();
-        (membrosRes.data || []).forEach((m: any) => {
-          if (m.id && m.nome) membrosMap.set(String(m.id), String(m.nome).trim());
-        });
-
-        const lideresPorUnidade = new Map<string, string[]>();
-        (unidLideresRes.data || []).forEach((ul: any) => {
-          const nome = membrosMap.get(String(ul.pessoa_id));
-          if (nome) {
-            const uId = String(ul.unidade_id);
-            if (!lideresPorUnidade.has(uId)) lideresPorUnidade.set(uId, []);
-            if (!lideresPorUnidade.get(uId)!.includes(nome)) {
-              lideresPorUnidade.get(uId)!.push(nome);
-            }
-          }
-        });
-
-        (membrosRes.data || []).forEach((m: any) => {
-          if (m.unidade_id && m.funcao && String(m.funcao).toLowerCase().includes('lider') && m.nome) {
-            const uId = String(m.unidade_id);
-            const nome = String(m.nome).trim();
-            if (!lideresPorUnidade.has(uId)) lideresPorUnidade.set(uId, []);
-            if (!lideresPorUnidade.get(uId)!.includes(nome)) {
-              lideresPorUnidade.get(uId)!.push(nome);
-            }
-          }
-        });
 
         const data = rows.map((u: any) => {
           const lids = lideresPorUnidade.get(String(u.id)) || [];
-          return {
-            ...u,
-            lideres: lids,
-            lider_nome: lids.join(', ') || null,
-          };
+          return { ...u, lideres: lids, lider_nome: lids.join(', ') || null };
         });
 
         return NextResponse.json({ success: true, data });
