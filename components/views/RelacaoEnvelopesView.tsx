@@ -473,7 +473,11 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
     if (!relatorioParaExcluir) return;
     setIsExcluindo(true);
     try {
-      await TreasuryService.excluirLancamento(relatorioParaExcluir.id);
+      const res = await TreasuryService.excluirLancamento(relatorioParaExcluir.id);
+      if (!res.success) {
+        onShowToast(`Erro ao excluir: ${res.error || 'falha no servidor'}`);
+        return;
+      }
       onShowToast(`Relatório ID #${relatorioParaExcluir.id} excluído com sucesso.`);
       setRelatorioParaExcluir(null);
       onRefresh();

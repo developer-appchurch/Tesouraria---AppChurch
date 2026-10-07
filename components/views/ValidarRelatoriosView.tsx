@@ -544,13 +544,17 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
     const total = Number((editPix + editEspecie).toFixed(2));
 
     try {
-      await TreasuryService.editarLancamento(modalEditarItem.id, {
+      const res = await TreasuryService.editarLancamento(modalEditarItem.id, {
         celula: modalEditarItem.celula_nome,
         data: editData,
         pix: editPix,
         especie: editEspecie,
         total,
       });
+      if (!res.success) {
+        onShowToast(`Erro ao salvar: ${res.error || 'falha no servidor'}`);
+        return;
+      }
 
       setRelatorios((prev) =>
         prev.map((r) =>
