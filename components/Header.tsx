@@ -136,6 +136,8 @@ export const Header: React.FC<HeaderProps> = ({
     switch (currentView) {
       case 'dashboard':
         return 'DashBoard | Ofertas Célula';
+      case 'fluxo-caixa':
+        return 'Fluxo de Caixa';
       case 'relacao-envelopes':
         return 'Relação de Envelopes';
       case 'validar-relatorios':

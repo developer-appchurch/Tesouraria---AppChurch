@@ -978,6 +978,345 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ success: true });
       }
 
+      // =====================================================================
+      // FLUXO DE CAIXA (public.fluxo_caixa)
+      // =====================================================================
+      case 'fluxo_listar': {
+        const ano = params.ano ? String(params.ano).toLowerCase() : 'todos';
+        const mes = params.mes ? String(params.mes).toLowerCase() : 'todos';
+        const tipo = params.tipo ? String(params.tipo).trim() : 'todos';
+        const categoria = params.categoria ? String(params.categoria).trim() : 'todos';
+        const busca = params.busca ? String(params.busca).trim().toLowerCase() : '';
+
+        let q = supabase
+          .from('fluxo_caixa')
+          .select('*')
+          .eq('id_igreja', igrejaId)
+          .order('DataFluxo', { ascending: false })
+          .order('criado_em', { ascending: false });
+
+        if (ano !== 'todos' && ano !== 'todos os anos' && !isNaN(Number(ano))) {
+          const anoNum = Number(ano);
+          q = q.gte('DataFluxo', `${anoNum}-01-01`).lte('DataFluxo', `${anoNum}-12-31`);
+        }
+
+        if (mes !== 'todos' && mes !== 'todos os meses' && !isNaN(Number(mes))) {
+          const mesNum = Number(mes);
+          const anoNum = (!isNaN(Number(ano)) && Number(ano) > 2000) ? Number(ano) : new Date().getFullYear();
+          const diasNoMes = new Date(anoNum, mesNum, 0).getDate();
+          const padM = String(mesNum).padStart(2, '0');
+          q = q.gte('DataFluxo', `${anoNum}-${padM}-01`).lte('DataFluxo', `${anoNum}-${padM}-${String(diasNoMes).padStart(2, '0')}`);
+        }
+
+        if (tipo !== 'todos' && tipo !== 'todos os tipos (entradas & saídas)') {
+          if (tipo.toLowerCase().includes('entrada')) {
+            q = q.ilike('TipoFluxo', '%Entrada%');
+          } else if (tipo.toLowerCase().includes('saída') || tipo.toLowerCase().includes('saida')) {
+            q = q.ilike('TipoFluxo', '%Sa%da%');
+          }
+        }
+
+        if (categoria !== 'todos' && categoria !== 'todas as categorias') {
+          q = q.eq('CategoriaFluxo', categoria);
+        }
+
+        const { data: rows, error } = await q;
+
+        if (error) {
+          if (error.code === 'PGRST205' || error.code === '42P01' || error.message.includes('does not exist')) {
+            return NextResponse.json({
+              success: true,
+              data: [],
+              count: 0,
+              tabelaCriada: false,
+              aviso: 'Tabela public.fluxo_caixa não encontrada no Supabase.'
+            });
+          }
+          throw new HttpError(400, error.message);
+        }
+
+        let itens = rows || [];
+        if (busca) {
+          itens = itens.filter((item: any) => {
+            const obs = String(item.ObservacoesFluxo || '').toLowerCase();
+            const cat = String(item.CategoriaFluxo || '').toLowerCase();
+            const idStr = String(item.ID || item.id || '').toLowerCase();
+            return obs.includes(busca) || cat.includes(busca) || idStr.includes(busca);
+          });
+        }
+
+        const tesoureiroIds = Array.from(new Set(itens.map((i: any) => i.Id_Tesoureiro).filter(Boolean)));
+        const membrosMap = new Map<string, string>();
+        if (tesoureiroIds.length > 0) {
+          const { data: membrosList } = await supabase
+            .from('membros')
+            .select('id, nome')
+            .in('id', tesoureiroIds);
+          (membrosList || []).forEach((m: any) => {
+            membrosMap.set(String(m.id), String(m.nome));
+          });
+        }
+
+        const dataFormatada = itens.map((i: any) => ({
+          ID: String(i.ID || i.id),
+          id: String(i.ID || i.id),
+          id_igreja: String(i.id_igreja),
+          CategoriaFluxo: String(i.CategoriaFluxo || 'Geral'),
+          TipoFluxo: String(i.TipoFluxo || 'Entrada'),
+          ValorFluxo: Number(i.ValorFluxo || 0),
+          DataFluxo: String(i.DataFluxo ? String(i.DataFluxo).slice(0, 10) : new Date().toISOString().slice(0, 10)),
+          Id_Tesoureiro: i.Id_Tesoureiro ? String(i.Id_Tesoureiro) : null,
+          nome_tesoureiro: i.Id_Tesoureiro ? (membrosMap.get(String(i.Id_Tesoureiro)) || 'Tesoureiro') : (membro.nome || 'Tesoureiro'),
+          StatusFluxo: String(i.StatusFluxo || 'CONFIRMADO'),
+          ObservacoesFluxo: i.ObservacoesFluxo ? String(i.ObservacoesFluxo) : null,
+          criado_em: i.criado_em,
+          atualizado_em: i.atualizado_em,
+        }));
+
+        return NextResponse.json({ success: true, data: dataFormatada, count: dataFormatada.length, tabelaCriada: true });
+      }
+
+      case 'fluxo_kpis': {
+        const ano = params.ano ? String(params.ano).toLowerCase() : 'todos';
+        const mes = params.mes ? String(params.mes).toLowerCase() : 'todos';
+        const anoNum = (!isNaN(Number(ano)) && Number(ano) > 2000) ? Number(ano) : new Date().getFullYear();
+        const mesNum = (!isNaN(Number(mes)) && Number(mes) >= 1 && Number(mes) <= 12) ? Number(mes) : null;
+
+        const { data: todos, error } = await supabase
+          .from('fluxo_caixa')
+          .select('ID, TipoFluxo, ValorFluxo, DataFluxo, StatusFluxo')
+          .eq('id_igreja', igrejaId);
+
+        const mesesAbrev = ['JAN', 'FEV', 'MAR', 'ABR', 'MAI', 'JUN', 'JUL', 'AGO', 'SET', 'OUT', 'NOV', 'DEZ'];
+        const mesesNomes = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+
+        if (error) {
+          if (error.code === 'PGRST205' || error.code === '42P01' || error.message.includes('does not exist')) {
+            return NextResponse.json({
+              success: true,
+              data: {
+                kpis: {
+                  saldoAtual: 0,
+                  entradasMes: 0,
+                  saidasMes: 0,
+                  saldoMes: 0,
+                  situacao: 'SUPERÁVIT ACUMULADO',
+                  anoCompletoEntradas: 0,
+                  comprometimento: 0,
+                  resultadoLiquido: 'POSITIVO',
+                },
+                demonstrativo: mesesAbrev.map((abrev, idx) => ({
+                  mesNumero: idx + 1,
+                  mesAbrev: abrev,
+                  mesNome: mesesNomes[idx],
+                  ano: anoNum,
+                  entradas: 0,
+                  saidas: 0,
+                  resultado: 0,
+                })),
+                anosDisponiveis: [anoNum],
+                tabelaCriada: false
+              }
+            });
+          }
+          throw new HttpError(400, error.message);
+        }
+
+        const registros = todos || [];
+        let totalEntradasGeral = 0;
+        let totalSaidasGeral = 0;
+        let entradasPeriodo = 0;
+        let saidasPeriodo = 0;
+        let anoCompletoEntradas = 0;
+
+        const demonstrativo = mesesAbrev.map((abrev, idx) => ({
+          mesNumero: idx + 1,
+          mesAbrev: abrev,
+          mesNome: mesesNomes[idx],
+          ano: anoNum,
+          entradas: 0,
+          saidas: 0,
+          resultado: 0,
+        }));
+
+        const anosSet = new Set<number>();
+        anosSet.add(new Date().getFullYear());
+
+        for (const r of registros) {
+          const val = Number(r.ValorFluxo || 0);
+          const isEntrada = String(r.TipoFluxo || '').toLowerCase().includes('entrada');
+          const dataStr = String(r.DataFluxo || '').slice(0, 10);
+          const rAno = Number(dataStr.slice(0, 4));
+          const rMes = Number(dataStr.slice(5, 7));
+
+          if (rAno > 2000) anosSet.add(rAno);
+
+          // Saldo Atual Geral (todo o histórico da igreja)
+          if (isEntrada) totalEntradasGeral += val;
+          else totalSaidasGeral += val;
+
+          // Demonstrativo Mensal do ano selecionado
+          if (rAno === anoNum && rMes >= 1 && rMes <= 12) {
+            if (isEntrada) demonstrativo[rMes - 1].entradas += val;
+            else demonstrativo[rMes - 1].saidas += val;
+            demonstrativo[rMes - 1].resultado = demonstrativo[rMes - 1].entradas - demonstrativo[rMes - 1].saidas;
+          }
+
+          // Total de entradas do ano completo
+          if (rAno === anoNum && isEntrada) {
+            anoCompletoEntradas += val;
+          }
+
+          // Filtro para os 4 KPIs
+          const matchAno = (ano === 'todos' || ano === 'todos os anos') ? true : rAno === anoNum;
+          const matchMes = mesNum === null ? true : rMes === mesNum;
+
+          if (matchAno && matchMes) {
+            if (isEntrada) entradasPeriodo += val;
+            else saidasPeriodo += val;
+          }
+        }
+
+        const saldoAtual = Math.round((totalEntradasGeral - totalSaidasGeral) * 100) / 100;
+        const saldoMes = Math.round((entradasPeriodo - saidasPeriodo) * 100) / 100;
+        const comprometimento = entradasPeriodo > 0 ? Math.round((saidasPeriodo / entradasPeriodo) * 100) : 0;
+
+        return NextResponse.json({
+          success: true,
+          data: {
+            kpis: {
+              saldoAtual,
+              entradasMes: Math.round(entradasPeriodo * 100) / 100,
+              saidasMes: Math.round(saidasPeriodo * 100) / 100,
+              saldoMes,
+              situacao: saldoAtual >= 0 ? 'SUPERÁVIT ACUMULADO' : 'DÉFICIT ACUMULADO',
+              anoCompletoEntradas: Math.round(anoCompletoEntradas * 100) / 100,
+              comprometimento,
+              resultadoLiquido: saldoMes >= 0 ? 'POSITIVO' : 'NEGATIVO',
+            },
+            demonstrativo,
+            anosDisponiveis: Array.from(anosSet).sort((a, b) => b - a),
+            tabelaCriada: true
+          }
+        });
+      }
+
+      case 'fluxo_criar': {
+        const categoria = String(params.CategoriaFluxo || params.categoria || '').trim();
+        const tipo = String(params.TipoFluxo || params.tipo || 'Entrada').trim();
+        const valor = Number(params.ValorFluxo ?? params.valor ?? 0);
+        const data = String(params.DataFluxo || params.data || new Date().toISOString().slice(0, 10)).trim();
+        const status = String(params.StatusFluxo || params.status || 'CONFIRMADO').trim();
+        const observacoes = params.ObservacoesFluxo || params.observacoes || null;
+
+        if (!categoria) throw new HttpError(400, 'Categoria do fluxo é obrigatória.');
+        if (!tipo) throw new HttpError(400, 'Tipo do fluxo (Entrada ou Saída) é obrigatório.');
+        if (isNaN(valor) || valor <= 0) throw new HttpError(400, 'Valor do fluxo deve ser maior que zero.');
+
+        const { data: inserido, error } = await supabase
+          .from('fluxo_caixa')
+          .insert({
+            id_igreja: igrejaId,
+            CategoriaFluxo: categoria,
+            TipoFluxo: tipo,
+            ValorFluxo: valor,
+            DataFluxo: data,
+            Id_Tesoureiro: membro.id,
+            StatusFluxo: status,
+            ObservacoesFluxo: observacoes,
+            criado_em: new Date().toISOString(),
+            atualizado_em: new Date().toISOString(),
+          })
+          .select('*')
+          .single();
+
+        if (error) {
+          if (error.code === 'PGRST205' || error.code === '42P01') {
+            throw new HttpError(400, "A tabela 'public.fluxo_caixa' ainda não existe no Supabase. Por favor, execute o script SQL 'supabase/migrations/20261009183000_criar_tabela_fluxo_caixa.sql' no SQL Editor do Supabase.");
+          }
+          throw new HttpError(400, error.message);
+        }
+
+        return NextResponse.json({ success: true, data: inserido });
+      }
+
+      case 'fluxo_atualizar': {
+        const id = String(params.ID || params.id || '').trim();
+        if (!id) throw new HttpError(400, 'ID do lançamento é obrigatório.');
+
+        const updateData: any = { atualizado_em: new Date().toISOString() };
+        if (params.CategoriaFluxo || params.categoria) updateData.CategoriaFluxo = String(params.CategoriaFluxo || params.categoria).trim();
+        if (params.TipoFluxo || params.tipo) updateData.TipoFluxo = String(params.TipoFluxo || params.tipo).trim();
+        if (params.ValorFluxo !== undefined || params.valor !== undefined) {
+          const v = Number(params.ValorFluxo ?? params.valor);
+          if (isNaN(v) || v <= 0) throw new HttpError(400, 'Valor inválido.');
+          updateData.ValorFluxo = v;
+        }
+        if (params.DataFluxo || params.data) updateData.DataFluxo = String(params.DataFluxo || params.data).trim();
+        if (params.StatusFluxo || params.status) updateData.StatusFluxo = String(params.StatusFluxo || params.status).trim();
+        if (params.ObservacoesFluxo !== undefined || params.observacoes !== undefined) {
+          updateData.ObservacoesFluxo = params.ObservacoesFluxo ?? params.observacoes;
+        }
+
+        const { data: atualizado, error } = await supabase
+          .from('fluxo_caixa')
+          .update(updateData)
+          .eq('ID', id)
+          .eq('id_igreja', igrejaId)
+          .select('*')
+          .single();
+
+        if (error) throw new HttpError(400, error.message);
+        return NextResponse.json({ success: true, data: atualizado });
+      }
+
+      case 'fluxo_excluir': {
+        const id = String(params.ID || params.id || '').trim();
+        if (!id) throw new HttpError(400, 'ID do lançamento é obrigatório.');
+
+        const { error } = await supabase
+          .from('fluxo_caixa')
+          .delete()
+          .eq('ID', id)
+          .eq('id_igreja', igrejaId);
+
+        if (error) throw new HttpError(400, error.message);
+        return NextResponse.json({ success: true });
+      }
+
+      case 'fluxo_categorias': {
+        const defaultCategorias = [
+          'Dízimos',
+          'Ofertas de Célula',
+          'Ofertas de Culto',
+          'Doações',
+          'Eventos e Conferências',
+          'Aluguel do Templo',
+          'Energia Elétrica',
+          'Água e Esgoto',
+          'Internet e Telefonia',
+          'Manutenção e Reformas',
+          'Material de Expediente',
+          'Equipamentos de Som e Mídia',
+          'Missões e Ação Social',
+          'Ajuda de Custo / Pastoral',
+          'Limpeza e Copa',
+          'Outros'
+        ];
+
+        const { data: rows } = await supabase
+          .from('fluxo_caixa')
+          .select('CategoriaFluxo')
+          .eq('id_igreja', igrejaId);
+
+        const catsSet = new Set(defaultCategorias);
+        (rows || []).forEach((r: any) => {
+          if (r.CategoriaFluxo) catsSet.add(String(r.CategoriaFluxo).trim());
+        });
+
+        return NextResponse.json({ success: true, data: Array.from(catsSet).sort() });
+      }
+
       default:
         throw new HttpError(400, 'Ação não reconhecida.');
     }

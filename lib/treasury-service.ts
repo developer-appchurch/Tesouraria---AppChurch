@@ -786,4 +786,129 @@ export const TreasuryService = {
     return { success: Boolean(res.success), error: res.error };
   },
 
+  // =========================================================================
+  // FLUXO DE CAIXA
+  // =========================================================================
+
+  /**
+   * Lista movimentações de fluxo de caixa com filtros
+   */
+  async fetchFluxoCaixa(params: {
+    ano?: number | string;
+    mes?: number | string;
+    tipo?: string;
+    categoria?: string;
+    busca?: string;
+  }): Promise<{ success: boolean; data: import('./types').FluxoCaixaItem[]; count?: number; tabelaCriada?: boolean; aviso?: string; error?: string }> {
+    const res = await callTreasuryApi<import('./types').FluxoCaixaItem[]>('fluxo_listar', params);
+    if (res.success && Array.isArray(res.data)) {
+      return { success: true, data: res.data, count: res.count, tabelaCriada: res.data ? true : false };
+    }
+    return { success: false, data: [], count: 0, error: res.error, aviso: (res as any)?.aviso };
+  },
+
+  /**
+   * Obtém KPIs e dados para o gráfico de demonstrativo mensal do Fluxo de Caixa
+   */
+  async fetchFluxoKPIs(
+    ano: number | string = new Date().getFullYear(),
+    mes: number | string = 'todos'
+  ): Promise<{
+    success: boolean;
+    kpis: import('./types').FluxoCaixaKPIs;
+    demonstrativo: import('./types').FluxoMensalDemonstrativo[];
+    anosDisponiveis: number[];
+    tabelaCriada?: boolean;
+    error?: string;
+  }> {
+    const res = await callTreasuryApi<{
+      kpis: import('./types').FluxoCaixaKPIs;
+      demonstrativo: import('./types').FluxoMensalDemonstrativo[];
+      anosDisponiveis: number[];
+      tabelaCriada?: boolean;
+    }>('fluxo_kpis', { ano, mes });
+
+    if (res.success && res.data) {
+      return {
+        success: true,
+        kpis: res.data.kpis,
+        demonstrativo: res.data.demonstrativo,
+        anosDisponiveis: res.data.anosDisponiveis || [Number(ano) || new Date().getFullYear()],
+        tabelaCriada: res.data.tabelaCriada,
+      };
+    }
+
+    return {
+      success: false,
+      kpis: {
+        saldoAtual: 0,
+        entradasMes: 0,
+        saidasMes: 0,
+        saldoMes: 0,
+        situacao: 'SUPERÁVIT ACUMULADO',
+        anoCompletoEntradas: 0,
+        comprometimento: 0,
+        resultadoLiquido: 'POSITIVO',
+      },
+      demonstrativo: [],
+      anosDisponiveis: [new Date().getFullYear()],
+      error: res.error,
+    };
+  },
+
+  /**
+   * Cadastra novo lançamento no fluxo de caixa
+   */
+  async criarFluxoCaixa(payload: import('./types').FluxoCaixaPayload): Promise<{ success: boolean; data?: any; error?: string }> {
+    const res = await callTreasuryApi('fluxo_criar', payload);
+    return { success: Boolean(res.success), data: res.data, error: res.error };
+  },
+
+  /**
+   * Atualiza um lançamento do fluxo de caixa
+   */
+  async atualizarFluxoCaixa(id: string, payload: Partial<import('./types').FluxoCaixaPayload>): Promise<{ success: boolean; data?: any; error?: string }> {
+    const res = await callTreasuryApi('fluxo_atualizar', { ID: id, ...payload });
+    return { success: Boolean(res.success), data: res.data, error: res.error };
+  },
+
+  /**
+   * Exclui um lançamento do fluxo de caixa
+   */
+  async excluirFluxoCaixa(id: string): Promise<{ success: boolean; error?: string }> {
+    const res = await callTreasuryApi('fluxo_excluir', { ID: id });
+    return { success: Boolean(res.success), error: res.error };
+  },
+
+  /**
+   * Obtém categorias disponíveis para fluxo de caixa
+   */
+  async fetchCategoriasFluxo(): Promise<{ success: boolean; data: string[]; error?: string }> {
+    const res = await callTreasuryApi<string[]>('fluxo_categorias');
+    if (res.success && Array.isArray(res.data)) {
+      return { success: true, data: res.data };
+    }
+    return {
+      success: true,
+      data: [
+        'Dízimos',
+        'Ofertas de Célula',
+        'Ofertas de Culto',
+        'Doações',
+        'Eventos e Conferências',
+        'Aluguel do Templo',
+        'Energia Elétrica',
+        'Água e Esgoto',
+        'Internet e Telefonia',
+        'Manutenção e Reformas',
+        'Material de Expediente',
+        'Equipamentos de Som e Mídia',
+        'Missões e Ação Social',
+        'Ajuda de Custo / Pastoral',
+        'Limpeza e Copa',
+        'Outros',
+      ],
+    };
+  },
+
 };

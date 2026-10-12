@@ -2,6 +2,7 @@ export type ViewMode =
   | 'login'
   | 'validar-relatorios'
   | 'relacao-envelopes'
+  | 'fluxo-caixa'
   | 'dashboard'
   | 'permissoes';
 
@@ -174,4 +175,54 @@ export interface AgregadoDashboard {
   semanas_entregues: number;
   /** Semanas em que todos os relatórios da célula foram validados */
   semanas_validadas: number;
+}
+
+/** Item de movimentação do Fluxo de Caixa (tabela public.fluxo_caixa) */
+export interface FluxoCaixaItem {
+  ID: string;
+  id?: string;
+  id_igreja: string;
+  CategoriaFluxo: string;
+  TipoFluxo: 'Entrada' | 'Saída' | string;
+  ValorFluxo: number;
+  DataFluxo: string; // YYYY-MM-DD
+  Id_Tesoureiro?: string | null;
+  nome_tesoureiro?: string;
+  StatusFluxo: 'CONFIRMADO' | 'PENDENTE' | string;
+  ObservacoesFluxo?: string | null;
+  criado_em?: string;
+  atualizado_em?: string;
+}
+
+/** Indicadores de KPI do Fluxo de Caixa */
+export interface FluxoCaixaKPIs {
+  saldoAtual: number;
+  entradasMes: number;
+  saidasMes: number;
+  saldoMes: number;
+  situacao: 'SUPERÁVIT ACUMULADO' | 'DÉFICIT ACUMULADO' | string;
+  anoCompletoEntradas: number;
+  comprometimento: number; // Porcentagem (0-100+)
+  resultadoLiquido: 'POSITIVO' | 'NEGATIVO' | string;
+}
+
+/** Item mensal para o Demonstrativo de Entradas e Saídas do gráfico */
+export interface FluxoMensalDemonstrativo {
+  mesNumero: number; // 1-12
+  mesAbrev: string; // JAN, FEV...
+  mesNome: string; // Janeiro, Fevereiro...
+  ano: number;
+  entradas: number;
+  saidas: number;
+  resultado: number;
+}
+
+/** Payload para inserção / atualização de fluxo */
+export interface FluxoCaixaPayload {
+  CategoriaFluxo: string;
+  TipoFluxo: 'Entrada' | 'Saída' | string;
+  ValorFluxo: number;
+  DataFluxo: string; // YYYY-MM-DD
+  StatusFluxo?: string;
+  ObservacoesFluxo?: string | null;
 }

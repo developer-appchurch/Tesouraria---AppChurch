@@ -5,6 +5,7 @@ import Image from 'next/image';
 import {
   ClipboardCheck,
   FileSpreadsheet,
+  TrendingUp,
   LayoutDashboard,
   ShieldCheck,
   X,
@@ -50,6 +51,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
       id: 'relacao-envelopes',
       label: 'Relação Envelopes',
       icon: FileSpreadsheet,
+    },
+    {
+      id: 'fluxo-caixa',
+      label: 'Fluxo de Caixa',
+      icon: TrendingUp,
     },
     {
       id: 'dashboard',

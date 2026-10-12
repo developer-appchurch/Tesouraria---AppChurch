@@ -6,6 +6,7 @@ import { Header } from '@/components/Header';
 import { LoginView } from '@/components/views/LoginView';
 import { ValidarRelatoriosView } from '@/components/views/ValidarRelatoriosView';
 import { RelacaoEnvelopesView } from '@/components/views/RelacaoEnvelopesView';
+import { FluxoCaixaView } from '@/components/views/FluxoCaixaView';
 import { DashboardView } from '@/components/views/DashboardView';
 import { PermissoesView } from '@/components/views/PermissoesView';
 import { TreasuryService } from '@/lib/treasury-service';
@@ -64,6 +65,7 @@ export default function TreasuryApp() {
   // Filter states per view
   // Padrão: ano corrente (não fixo no código)
   const [anoDashboard, setAnoDashboard] = useState<number | string>(() => new Date().getFullYear());
+  const [anoFluxo, setAnoFluxo] = useState<number | string>(() => new Date().getFullYear());
   const [anoValidar, setAnoValidar] = useState<number | string>(() => new Date().getFullYear());
   const [anoEnvelopes, setAnoEnvelopes] = useState<number | string>(() => new Date().getFullYear());
   const [mesEnvelopes, setMesEnvelopes] = useState<string>(() => String(new Date().getMonth() + 1));
@@ -97,6 +99,8 @@ export default function TreasuryApp() {
       ? anoEnvelopes
       : currentView === 'dashboard'
       ? anoDashboard
+      : currentView === 'fluxo-caixa'
+      ? anoFluxo
       : anoValidar;
   const periodoDados: number | string =
     String(anoDados).toLowerCase().startsWith('todos') ? 'todos' : Number(anoDados) || new Date().getFullYear();
@@ -234,6 +238,8 @@ export default function TreasuryApp() {
       ? anoEnvelopes
       : currentView === 'validar-relatorios'
       ? anoValidar
+      : currentView === 'fluxo-caixa'
+      ? anoFluxo
       : anoDashboard;
 
   const setAnoAtivoHeader =
@@ -241,6 +247,8 @@ export default function TreasuryApp() {
       ? setAnoEnvelopes
       : currentView === 'validar-relatorios'
       ? setAnoValidar
+      : currentView === 'fluxo-caixa'
+      ? setAnoFluxo
       : setAnoDashboard;
 
   // View efetiva
@@ -275,7 +283,7 @@ export default function TreasuryApp() {
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {/* Top Header */}
-        {viewEfetiva !== 'dashboard' && (
+        {viewEfetiva !== 'dashboard' && viewEfetiva !== 'fluxo-caixa' && (
           <Header
             currentView={viewEfetiva}
             anoSelecionado={anoAtivoHeader}
@@ -331,6 +339,20 @@ export default function TreasuryApp() {
               onSelectSetor={setSetorEnvelopes}
               onRefresh={handleRefresh}
               onShowToast={showToast}
+            />
+          </div>
+
+          <div className={viewEfetiva === 'fluxo-caixa' ? 'block min-h-full' : 'hidden'}>
+            <FluxoCaixaView
+              ativa={viewEfetiva === 'fluxo-caixa'}
+              anoSelecionado={anoFluxo}
+              onSelectAno={setAnoFluxo}
+              onRefresh={handleRefresh}
+              isRefreshing={isRefreshing}
+              onToggleMobileMenu={() => setIsMobileNavOpen((prev) => !prev)}
+              onShowToast={showToast}
+              anosBase={anosComRelatorios}
+              usuarioLogado={usuarioLogado}
             />
           </div>
 
