@@ -354,6 +354,26 @@ async function converterComprovanteWebp(entrada: Buffer): Promise<Buffer> {
   return menor;
 }
 
+/** Lançamento no formato da tela (o caminho do comprovante no storage não sai do servidor). */
+function formatarItemFluxo(i: any, nomeTesoureiro: string) {
+  return {
+    ID: String(i.ID || i.id),
+    id: String(i.ID || i.id),
+    id_igreja: String(i.id_igreja),
+    CategoriaFluxo: String(i.CategoriaFluxo || 'Geral'),
+    TipoFluxo: String(i.TipoFluxo || 'Entrada'),
+    ValorFluxo: Number(i.ValorFluxo || 0),
+    DataFluxo: String(i.DataFluxo ? String(i.DataFluxo).slice(0, 10) : new Date().toISOString().slice(0, 10)),
+    Id_Tesoureiro: i.Id_Tesoureiro ? String(i.Id_Tesoureiro) : null,
+    nome_tesoureiro: nomeTesoureiro,
+    StatusFluxo: String(i.StatusFluxo || 'CONFIRMADO'),
+    ObservacoesFluxo: i.ObservacoesFluxo ? String(i.ObservacoesFluxo) : null,
+    temComprovante: Boolean(i.ComprovanteFluxo),
+    criado_em: i.criado_em,
+    atualizado_em: i.atualizado_em,
+  };
+}
+
 /** Lançamento do fluxo de caixa SÓ da igreja da sessão (404 se for de outra igreja ou não existir). */
 async function lancamentoFluxoDaIgreja(
   supabase: SupabaseClient,
@@ -1235,23 +1255,12 @@ export async function POST(req: NextRequest) {
           (await nomesDeMembros(supabase, igrejaId, tesoureiroIds)).forEach((nome, id) => membrosMap.set(id, nome));
         }
 
-        const dataFormatada = itens.map((i: any) => ({
-          ID: String(i.ID || i.id),
-          id: String(i.ID || i.id),
-          id_igreja: String(i.id_igreja),
-          CategoriaFluxo: String(i.CategoriaFluxo || 'Geral'),
-          TipoFluxo: String(i.TipoFluxo || 'Entrada'),
-          ValorFluxo: Number(i.ValorFluxo || 0),
-          DataFluxo: String(i.DataFluxo ? String(i.DataFluxo).slice(0, 10) : new Date().toISOString().slice(0, 10)),
-          Id_Tesoureiro: i.Id_Tesoureiro ? String(i.Id_Tesoureiro) : null,
-          nome_tesoureiro: i.Id_Tesoureiro ? (membrosMap.get(String(i.Id_Tesoureiro)) || 'Tesoureiro') : (membro.nome || 'Tesoureiro'),
-          StatusFluxo: String(i.StatusFluxo || 'CONFIRMADO'),
-          ObservacoesFluxo: i.ObservacoesFluxo ? String(i.ObservacoesFluxo) : null,
-          // Só indica se há foto; o caminho no storage não sai do servidor
-          temComprovante: Boolean(i.ComprovanteFluxo),
-          criado_em: i.criado_em,
-          atualizado_em: i.atualizado_em,
-        }));
+        const dataFormatada = itens.map((i: any) =>
+          formatarItemFluxo(
+            i,
+            i.Id_Tesoureiro ? membrosMap.get(String(i.Id_Tesoureiro)) || 'Tesoureiro' : membro.nome || 'Tesoureiro'
+          )
+        );
 
         return NextResponse.json({ success: true, data: dataFormatada, count: dataFormatada.length, tabelaCriada: true });
       }
@@ -1421,7 +1430,7 @@ export async function POST(req: NextRequest) {
           throw new HttpError(400, error.message);
         }
 
-        return NextResponse.json({ success: true, data: inserido });
+        return NextResponse.json({ success: true, data: formatarItemFluxo(inserido, membro.nome || 'Tesoureiro') });
       }
 
       case 'fluxo_atualizar': {
@@ -1451,7 +1460,13 @@ export async function POST(req: NextRequest) {
           .single();
 
         if (error) throw new HttpError(400, error.message);
-        return NextResponse.json({ success: true, data: atualizado });
+        // Devolve o lançamento já no formato da tela: o app troca só esta linha, sem reler a lista
+        let nomeTes = membro.nome || 'Tesoureiro';
+        if (atualizado?.Id_Tesoureiro && String(atualizado.Id_Tesoureiro) !== String(membro.id)) {
+          const nomes = await nomesDeMembros(supabase, igrejaId, [String(atualizado.Id_Tesoureiro)]);
+          nomeTes = nomes.get(String(atualizado.Id_Tesoureiro)) || 'Tesoureiro';
+        }
+        return NextResponse.json({ success: true, data: formatarItemFluxo(atualizado, nomeTes) });
       }
 
       case 'fluxo_excluir': {

@@ -34,6 +34,7 @@ import { formatBRL } from '@/lib/utils';
 import { BotaoExportar } from '@/components/BotaoExportar';
 import { prepararFotoComprovante, FotoPreparada } from '@/lib/foto-comprovante';
 import type { DadosBalancete } from '@/lib/exportar';
+import { aplicarMudancaFluxo } from '@/lib/fluxo-local';
 
 interface FluxoCaixaViewProps {
   ativa?: boolean;
@@ -288,6 +289,28 @@ export const FluxoCaixaView: React.FC<FluxoCaixaViewProps> = ({
     }
   };
 
+  // Inclusão/edição/exclusão: troca só a linha afetada e ajusta cards e gráfico localmente.
+  // Nenhuma leitura extra do banco; o período em tela fica guardado já atualizado.
+  const aplicarLocal = (antes: FluxoCaixaItem | null, depois: FluxoCaixaItem | null) => {
+    const novo = aplicarMudancaFluxo(
+      { lista: movimentacoesPeriodo, kpis, demonstrativo, anosDisponiveis },
+      antes,
+      depois,
+      anoSelecionado,
+      mesSelecionado
+    );
+    setMovimentacoes(novo.lista);
+    setKpis(novo.kpis);
+    setDemonstrativo(novo.demonstrativo);
+    setAnosDisponiveis(novo.anosDisponiveis);
+    TreasuryService.gravarFluxoLocal(anoSelecionado, mesSelecionado, { ...novo, tabelaCriada });
+    const categoriaNova = depois?.CategoriaFluxo;
+    if (categoriaNova && !categoriasDisponiveis.includes(categoriaNova)) {
+      setCategoriasDisponiveis((atual) => Array.from(new Set([...atual, categoriaNova])).sort());
+      TreasuryService.adicionarCategoriaFluxoLocal(categoriaNova);
+    }
+  };
+
   // Reset do formulário
   const resetForm = () => {
     setFormTipo('Entrada');
@@ -381,8 +404,16 @@ export const FluxoCaixaView: React.FC<FluxoCaixaViewProps> = ({
         return;
       }
 
-      const idSalvo = String(itemParaEditar ? itemParaEditar.ID || itemParaEditar.id : res.data?.ID || res.data?.id || '');
+      const salvo: FluxoCaixaItem | null = res.data?.ID ? (res.data as FluxoCaixaItem) : null;
+      const idSalvo = String(itemParaEditar ? itemParaEditar.ID || itemParaEditar.id : salvo?.ID || '');
       const erroFoto = idSalvo ? await tratarComprovante(idSalvo) : fotoNova ? 'lançamento sem ID' : null;
+      if (salvo) {
+        // Marcação do comprovante conforme o que acabou de acontecer com a foto
+        const temComprovante = erroFoto ? Boolean(salvo.temComprovante) : fotoNova ? true : removerFotoAtual ? false : Boolean(salvo.temComprovante);
+        aplicarLocal(itemParaEditar, { ...salvo, temComprovante });
+      } else {
+        carregarDadosFluxo(); // resposta inesperada: relê para não mostrar dado errado
+      }
       if (onShowToast) {
         onShowToast(
           erroFoto
@@ -394,7 +425,6 @@ export const FluxoCaixaView: React.FC<FluxoCaixaViewProps> = ({
       }
       setModalNovoAberto(false);
       resetForm();
-      carregarDadosFluxo();
     } catch (err: any) {
       setFormErro(err?.message || 'Erro inesperado ao salvar movimentação.');
     } finally {
@@ -411,8 +441,8 @@ export const FluxoCaixaView: React.FC<FluxoCaixaViewProps> = ({
       const res = await TreasuryService.excluirFluxoCaixa(id);
       if (res.success) {
         if (onShowToast) onShowToast('Lançamento excluído com sucesso!');
+        aplicarLocal(itemParaExcluir, null);
         setItemParaExcluir(null);
-        await carregarDadosFluxo();
       } else {
         if (onShowToast) onShowToast(res.error || 'Erro ao excluir lançamento.');
       }

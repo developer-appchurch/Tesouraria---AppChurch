@@ -47,6 +47,14 @@ function invalidarFluxo() {
   fluxoCache.clear();
   fluxoCategoriasCache = null;
 }
+/**
+ * Depois de incluir/editar/excluir: os outros períodos guardados ficam desatualizados
+ * e são descartados (relidos só se o usuário voltar a eles). O período em tela é
+ * atualizado pela própria tela com gravarFluxoLocal, sem nova leitura do banco.
+ */
+function descartarPeriodosFluxo() {
+  fluxoCache.clear();
+}
 
 // Caches mantidos fora do serviço (ex.: telas) se registram aqui para serem
 // limpos junto com os do serviço no login/logout: dados de uma igreja nunca
@@ -930,11 +938,25 @@ export const TreasuryService = {
   },
 
   /**
+   * Guarda o período em tela já atualizado localmente (sem nova leitura do banco).
+   */
+  gravarFluxoLocal(ano: number | string, mes: number | string, data: FluxoPeriodo) {
+    fluxoCache.set(chavePeriodo(ano, mes), { data, at: Date.now() });
+  },
+
+  /** Categoria nova criada num lançamento: entra na lista guardada, sem reler o banco. */
+  adicionarCategoriaFluxoLocal(categoria: string) {
+    const c = categoria.trim();
+    if (!c || !fluxoCategoriasCache || fluxoCategoriasCache.data.includes(c)) return;
+    fluxoCategoriasCache = { data: [...fluxoCategoriasCache.data, c].sort(), at: fluxoCategoriasCache.at };
+  },
+
+  /**
    * Cadastra novo lançamento no fluxo de caixa
    */
   async criarFluxoCaixa(payload: import('./types').FluxoCaixaPayload): Promise<{ success: boolean; data?: any; error?: string }> {
     const res = await callTreasuryApi('fluxo_criar', payload);
-    if (res.success) invalidarFluxo();
+    if (res.success) descartarPeriodosFluxo();
     return { success: Boolean(res.success), data: res.data, error: res.error };
   },
 
@@ -943,7 +965,7 @@ export const TreasuryService = {
    */
   async atualizarFluxoCaixa(id: string, payload: Partial<import('./types').FluxoCaixaPayload>): Promise<{ success: boolean; data?: any; error?: string }> {
     const res = await callTreasuryApi('fluxo_atualizar', { ID: id, ...payload });
-    if (res.success) invalidarFluxo();
+    if (res.success) descartarPeriodosFluxo();
     return { success: Boolean(res.success), data: res.data, error: res.error };
   },
 
@@ -952,7 +974,7 @@ export const TreasuryService = {
    */
   async excluirFluxoCaixa(id: string): Promise<{ success: boolean; error?: string }> {
     const res = await callTreasuryApi('fluxo_excluir', { ID: id });
-    if (res.success) invalidarFluxo();
+    if (res.success) descartarPeriodosFluxo();
     return { success: Boolean(res.success), error: res.error };
   },
 
@@ -961,7 +983,7 @@ export const TreasuryService = {
    */
   async enviarComprovanteFluxo(id: string, imagemBase64: string): Promise<{ success: boolean; tamanhoKB?: number; error?: string }> {
     const res = await callTreasuryApi<{ temComprovante: boolean; tamanhoKB: number }>('fluxo_comprovante_enviar', { ID: id, imagem: imagemBase64 });
-    if (res.success) invalidarFluxo();
+    if (res.success) descartarPeriodosFluxo();
     return { success: Boolean(res.success), tamanhoKB: res.data?.tamanhoKB, error: res.error };
   },
 
@@ -973,7 +995,7 @@ export const TreasuryService = {
 
   async removerComprovanteFluxo(id: string): Promise<{ success: boolean; error?: string }> {
     const res = await callTreasuryApi('fluxo_comprovante_remover', { ID: id });
-    if (res.success) invalidarFluxo();
+    if (res.success) descartarPeriodosFluxo();
     return { success: Boolean(res.success), error: res.error };
   },
 
