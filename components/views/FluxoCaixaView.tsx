@@ -17,9 +17,6 @@ import {
   Trash2,
   Edit2,
   X,
-  Copy,
-  Check,
-  Database,
   ArrowUpRight,
   ArrowDownLeft,
   ChevronDown,
@@ -81,81 +78,7 @@ const CATEGORIAS_PADRAO = [
   'Outras Saídas',
 ];
 
-const SQL_MIGRACAO = `-- ==============================================================================
--- Migração da Tabela de Fluxo de Caixa (Tesouraria AppChurch)
--- ==============================================================================
--- Colunas solicitadas:
--- "ID", "CategoriaFluxo", "TipoFluxo", "ValorFluxo", "DataFluxo",
--- "Id_Tesoureiro", "StatusFluxo", "ObservacoesFluxo"
--- com a adição da coluna "id_igreja"
--- ==============================================================================
 
-CREATE TABLE IF NOT EXISTS public.fluxo_caixa (
-  "ID" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  "id_igreja" UUID NOT NULL REFERENCES public.igrejas(id) ON DELETE CASCADE,
-  "CategoriaFluxo" VARCHAR(100) NOT NULL,
-  "TipoFluxo" VARCHAR(50) NOT NULL, -- 'Entrada' ou 'Saída'
-  "ValorFluxo" NUMERIC(12, 2) NOT NULL DEFAULT 0.00,
-  "DataFluxo" DATE NOT NULL DEFAULT CURRENT_DATE,
-  "Id_Tesoureiro" UUID REFERENCES public.membros(id) ON DELETE SET NULL,
-  "StatusFluxo" VARCHAR(50) NOT NULL DEFAULT 'CONFIRMADO', -- 'CONFIRMADO' ou 'PENDENTE'
-  "ObservacoesFluxo" TEXT,
-  "criado_em" TIMESTAMPTZ NOT NULL DEFAULT now(),
-  "atualizado_em" TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
--- Índices de alto desempenho para buscas, filtros e agrupamentos por igreja
-CREATE INDEX IF NOT EXISTS idx_fluxo_caixa_igreja_data ON public.fluxo_caixa ("id_igreja", "DataFluxo" DESC);
-CREATE INDEX IF NOT EXISTS idx_fluxo_caixa_igreja_tipo ON public.fluxo_caixa ("id_igreja", "TipoFluxo");
-CREATE INDEX IF NOT EXISTS idx_fluxo_caixa_igreja_categoria ON public.fluxo_caixa ("id_igreja", "CategoriaFluxo");
-CREATE INDEX IF NOT EXISTS idx_fluxo_caixa_tesoureiro ON public.fluxo_caixa ("Id_Tesoureiro");
-
--- Habilitar Row Level Security (RLS)
-ALTER TABLE public.fluxo_caixa ENABLE ROW LEVEL SECURITY;
-
--- Políticas de RLS
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies WHERE tablename = 'fluxo_caixa' AND policyname = 'Permitir leitura fluxo_caixa'
-  ) THEN
-    CREATE POLICY "Permitir leitura fluxo_caixa"
-      ON public.fluxo_caixa FOR SELECT
-      TO authenticated, service_role
-      USING (true);
-  END IF;
-
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies WHERE tablename = 'fluxo_caixa' AND policyname = 'Permitir inserção fluxo_caixa'
-  ) THEN
-    CREATE POLICY "Permitir inserção fluxo_caixa"
-      ON public.fluxo_caixa FOR INSERT
-      TO authenticated, service_role
-      WITH CHECK (true);
-  END IF;
-
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies WHERE tablename = 'fluxo_caixa' AND policyname = 'Permitir atualização fluxo_caixa'
-  ) THEN
-    CREATE POLICY "Permitir atualização fluxo_caixa"
-      ON public.fluxo_caixa FOR UPDATE
-      TO authenticated, service_role
-      USING (true);
-  END IF;
-
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies WHERE tablename = 'fluxo_caixa' AND policyname = 'Permitir exclusão fluxo_caixa'
-  ) THEN
-    CREATE POLICY "Permitir exclusão fluxo_caixa"
-      ON public.fluxo_caixa FOR DELETE
-      TO authenticated, service_role
-      USING (true);
-  END IF;
-END $$;
-
--- Conceder permissões para os papéis de serviço e autenticados
-GRANT ALL ON TABLE public.fluxo_caixa TO service_role, authenticated;
-GRANT SELECT ON TABLE public.fluxo_caixa TO anon;`;
 
 export const FluxoCaixaView: React.FC<FluxoCaixaViewProps> = ({
   ativa = true,
@@ -194,12 +117,10 @@ export const FluxoCaixaView: React.FC<FluxoCaixaViewProps> = ({
   const [carregando, setCarregando] = useState<boolean>(true);
   const [tabelaCriada, setTabelaCriada] = useState<boolean>(true);
   const [modalNovoAberto, setModalNovoAberto] = useState<boolean>(false);
-  const [modalSqlAberto, setModalSqlAberto] = useState<boolean>(false);
   const [itemParaEditar, setItemParaEditar] = useState<FluxoCaixaItem | null>(null);
   const [itemParaExcluir, setItemParaExcluir] = useState<FluxoCaixaItem | null>(null);
   const [salvando, setSalvando] = useState<boolean>(false);
   const [excluindo, setExcluindo] = useState<boolean>(false);
-  const [sqlCopiado, setSqlCopiado] = useState<boolean>(false);
 
   // Formulário de novo / edição
   const [formTipo, setFormTipo] = useState<'Entrada' | 'Saída'>('Entrada');
@@ -440,15 +361,7 @@ export const FluxoCaixaView: React.FC<FluxoCaixaViewProps> = ({
     }
   };
 
-  // Copiar SQL da migração para área de transferência
-  const copiarSql = () => {
-    if (navigator.clipboard) {
-      navigator.clipboard.writeText(SQL_MIGRACAO);
-      setSqlCopiado(true);
-      setTimeout(() => setSqlCopiado(false), 3000);
-      if (onShowToast) onShowToast('Script SQL copiado com sucesso!');
-    }
-  };
+
 
   // Cálculos dinâmicos da listagem filtrada
   const totalEntradasFiltradas = useMemo(() => {
@@ -545,15 +458,7 @@ export const FluxoCaixaView: React.FC<FluxoCaixaViewProps> = ({
             </select>
           </div>
 
-          {/* Botão Script SQL do Banco */}
-          <button
-            onClick={() => setModalSqlAberto(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#252a40] hover:bg-[#313754] text-slate-200 border border-[#394164] text-xs font-medium transition-colors cursor-pointer"
-            title="Ver estrutura da tabela public.fluxo_caixa no Supabase"
-          >
-            <Database className="w-3.5 h-3.5 text-indigo-400" />
-            <span className="hidden sm:inline">Estrutura SQL</span>
-          </button>
+
 
           {/* Botão Sincronizar */}
           <button
@@ -579,28 +484,7 @@ export const FluxoCaixaView: React.FC<FluxoCaixaViewProps> = ({
         </div>
       </div>
 
-      {/* Banner de Aviso caso a tabela ainda não exista no Supabase */}
-      {!tabelaCriada && (
-        <div className="bg-amber-950/40 border border-amber-500/50 rounded-xl p-4 text-amber-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-lg">
-          <div className="flex items-start gap-3">
-            <AlertCircle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
-            <div>
-              <p className="text-sm font-bold text-amber-200">
-                Tabela <code className="bg-amber-900/60 px-1.5 py-0.5 rounded text-amber-300">public.fluxo_caixa</code> não encontrada no Supabase
-              </p>
-              <p className="text-xs text-amber-300/90 mt-0.5">
-                Para começar a registrar as movimentações com a coluna <code className="font-mono">id_igreja</code>, execute o script SQL de migração no seu SQL Editor do Supabase.
-              </p>
-            </div>
-          </div>
-          <button
-            onClick={() => setModalSqlAberto(true)}
-            className="px-3.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold transition-colors shrink-0 shadow cursor-pointer"
-          >
-            Ver Script de Criação
-          </button>
-        </div>
-      )}
+
 
       {/* 4 Cards de KPIs Financeiros Reais */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
@@ -1205,73 +1089,7 @@ export const FluxoCaixaView: React.FC<FluxoCaixaViewProps> = ({
         </div>
       )}
 
-      {/* Modal: Estrutura SQL da Tabela public.fluxo_caixa */}
-      {modalSqlAberto && (
-        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-200">
-          <div className="bg-[#1c2030] border border-[#3b4366] rounded-xl shadow-2xl max-w-2xl w-full overflow-hidden flex flex-col max-h-[90vh]">
-            <div className="px-5 py-4 border-b border-[#2d3452] flex items-center justify-between bg-[#22273c]">
-              <div className="flex items-center gap-2">
-                <Database className="w-5 h-5 text-indigo-400" />
-                <div>
-                  <h3 className="text-sm sm:text-base font-bold text-white">
-                    Estrutura da Nova Tabela: <code className="text-indigo-300">public.fluxo_caixa</code>
-                  </h3>
-                  <p className="text-[11px] text-slate-400">
-                    Com a nova coluna <code className="text-emerald-400">id_igreja</code> para isolamento multi-igreja.
-                  </p>
-                </div>
-              </div>
-              <button
-                onClick={() => setModalSqlAberto(false)}
-                className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-[#2e3550] transition-colors cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
 
-            <div className="p-5 overflow-y-auto space-y-4">
-              <div className="bg-[#151724] border border-[#2d3452] p-3.5 rounded-lg text-xs text-slate-300 space-y-2">
-                <p className="font-bold text-white flex items-center gap-1.5">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                  Instruções para execução no Supabase:
-                </p>
-                <ol className="list-decimal list-inside space-y-1 text-slate-400">
-                  <li>Clique no botão abaixo para copiar o script SQL completo.</li>
-                  <li>Acesse o painel do seu projeto no Supabase.</li>
-                  <li>No menu lateral esquerdo, clique em <strong>SQL Editor</strong>.</li>
-                  <li>Cole este código em uma nova query e clique em <strong>Run</strong>.</li>
-                  <li>Volte a esta tela e clique em <strong>Sincronizar</strong>.</li>
-                </ol>
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-xs font-mono text-slate-400">script_fluxo_caixa.sql</span>
-                  <button
-                    onClick={copiarSql}
-                    className="flex items-center gap-1.5 px-3 py-1 rounded bg-[#2c324e] hover:bg-indigo-600 text-white text-xs font-semibold transition-colors cursor-pointer"
-                  >
-                    {sqlCopiado ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                    <span>{sqlCopiado ? 'Copiado!' : 'Copiar Script SQL'}</span>
-                  </button>
-                </div>
-                <pre className="p-3.5 bg-[#121420] border border-[#2a2f48] rounded-lg text-slate-300 font-mono text-xs overflow-x-auto max-h-64 leading-relaxed">
-                  {SQL_MIGRACAO}
-                </pre>
-              </div>
-            </div>
-
-            <div className="px-5 py-3 border-t border-[#2d3452] bg-[#22273c] flex items-center justify-end">
-              <button
-                onClick={() => setModalSqlAberto(false)}
-                className="px-4 py-1.5 rounded-lg bg-[#2c324e] hover:bg-[#394164] text-white text-xs font-medium transition-colors cursor-pointer"
-              >
-                Fechar
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Modal: Confirmação de Exclusão */}
       {itemParaExcluir && (
