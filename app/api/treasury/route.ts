@@ -863,11 +863,14 @@ export async function POST(req: NextRequest) {
         const membroIds = (permissoes || []).map((p: any) => p.membro_id).filter(Boolean);
 
         const membrosMap = new Map<string, { id: string; nome: string; funcao?: string; email?: string }>();
-        if (membroIds.length > 0) {
-          const { data: membrosList } = await supabase
+        // Sempre dentro da igreja da sessão (em lotes, para a URL não crescer com muitos acessos)
+        for (const lote of emLotes<string>(membroIds.map(String))) {
+          const { data: membrosList, error: membrosError } = await supabase
             .from('membros')
             .select('id, nome, funcao, email')
-            .in('id', membroIds);
+            .eq('igreja_id', igrejaId)
+            .in('id', lote);
+          if (membrosError) throw new HttpError(400, membrosError.message);
 
           (membrosList || []).forEach((m: any) => {
             membrosMap.set(String(m.id), m);
