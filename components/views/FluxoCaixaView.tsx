@@ -24,10 +24,16 @@ import {
   Clock,
   User,
   Layers,
+  Camera,
+  Paperclip,
+  ExternalLink,
 } from 'lucide-react';
 import { FluxoCaixaItem, FluxoCaixaKPIs, FluxoMensalDemonstrativo, FluxoCaixaPayload, MembroItem } from '@/lib/types';
 import { TreasuryService } from '@/lib/treasury-service';
 import { formatBRL } from '@/lib/utils';
+import { BotaoExportar } from '@/components/BotaoExportar';
+import { prepararFotoComprovante, FotoPreparada } from '@/lib/foto-comprovante';
+import type { DadosBalancete } from '@/lib/exportar';
 
 interface FluxoCaixaViewProps {
   ativa?: boolean;
@@ -41,6 +47,8 @@ interface FluxoCaixaViewProps {
   onToggleMobileMenu?: () => void;
   onShowToast?: (msg: string) => void;
   usuarioLogado?: MembroItem | null;
+  /** Cabeçalho dos arquivos exportados */
+  igrejaNome?: string | null;
 }
 
 const MESES_NOMES = [
@@ -93,6 +101,7 @@ export const FluxoCaixaView: React.FC<FluxoCaixaViewProps> = ({
   onToggleMobileMenu,
   onShowToast,
   usuarioLogado,
+  igrejaNome = null,
 }) => {
   // Filtros de visualização
   const [mesSelecionado, setMesSelecionado] = useState<string>('todos');
@@ -158,6 +167,15 @@ export const FluxoCaixaView: React.FC<FluxoCaixaViewProps> = ({
   const [formStatus, setFormStatus] = useState<string>('CONFIRMADO');
   const [formObservacoes, setFormObservacoes] = useState<string>('');
   const [formErro, setFormErro] = useState<string | null>(null);
+
+  // Comprovante (foto): preparada no navegador; o servidor grava sempre em WebP comprimido
+  const [fotoNova, setFotoNova] = useState<FotoPreparada | null>(null);
+  const [removerFotoAtual, setRemoverFotoAtual] = useState<boolean>(false);
+  const [preparandoFoto, setPreparandoFoto] = useState<boolean>(false);
+  const inputFotoRef = useRef<HTMLInputElement>(null);
+  // Visualização: link temporário gerado pelo servidor
+  const [comprovanteAberto, setComprovanteAberto] = useState<{ url: string; item: FluxoCaixaItem } | null>(null);
+  const [abrindoComprovanteId, setAbrindoComprovanteId] = useState<string | null>(null);
 
   // Aviso numa ref: o efeito de carregamento não roda de novo só porque a página re-renderizou
   const onShowToastRef = useRef(onShowToast);
@@ -230,6 +248,46 @@ export const FluxoCaixaView: React.FC<FluxoCaixaViewProps> = ({
     };
   }, [ativa, versaoDados, refreshToken]);
 
+  const descartarFotoNova = () => {
+    setFotoNova((atual) => {
+      if (atual) URL.revokeObjectURL(atual.previewUrl);
+      return null;
+    });
+    if (inputFotoRef.current) inputFotoRef.current.value = '';
+  };
+
+  const handleEscolherFoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const arquivo = e.target.files?.[0];
+    if (!arquivo) return;
+    setFormErro(null);
+    setPreparandoFoto(true);
+    try {
+      const preparada = await prepararFotoComprovante(arquivo);
+      setFotoNova((atual) => {
+        if (atual) URL.revokeObjectURL(atual.previewUrl);
+        return preparada;
+      });
+      setRemoverFotoAtual(false);
+    } catch (err: any) {
+      setFormErro(err?.message || 'Não foi possível usar esta foto.');
+    } finally {
+      setPreparandoFoto(false);
+      if (inputFotoRef.current) inputFotoRef.current.value = '';
+    }
+  };
+
+  const abrirComprovante = async (item: FluxoCaixaItem) => {
+    const id = String(item.ID || item.id);
+    setAbrindoComprovanteId(id);
+    try {
+      const res = await TreasuryService.linkComprovanteFluxo(id);
+      if (res.success && res.url) setComprovanteAberto({ url: res.url, item });
+      else if (onShowToast) onShowToast(res.error || 'Não foi possível abrir o comprovante.');
+    } finally {
+      setAbrindoComprovanteId(null);
+    }
+  };
+
   // Reset do formulário
   const resetForm = () => {
     setFormTipo('Entrada');
@@ -241,6 +299,8 @@ export const FluxoCaixaView: React.FC<FluxoCaixaViewProps> = ({
     setFormObservacoes('');
     setFormErro(null);
     setItemParaEditar(null);
+    descartarFotoNova();
+    setRemoverFotoAtual(false);
   };
 
   const abrirModalNovo = () => {
@@ -258,6 +318,8 @@ export const FluxoCaixaView: React.FC<FluxoCaixaViewProps> = ({
     setFormStatus(item.StatusFluxo || 'CONFIRMADO');
     setFormObservacoes(item.ObservacoesFluxo || '');
     setFormErro(null);
+    descartarFotoNova();
+    setRemoverFotoAtual(false);
     setModalNovoAberto(true);
   };
 
@@ -297,27 +359,42 @@ export const FluxoCaixaView: React.FC<FluxoCaixaViewProps> = ({
         ObservacoesFluxo: formObservacoes.trim() || null,
       };
 
-      if (itemParaEditar) {
-        const res = await TreasuryService.atualizarFluxoCaixa(itemParaEditar.ID || itemParaEditar.id!, payload);
-        if (res.success) {
-          if (onShowToast) onShowToast('Lançamento atualizado com sucesso!');
-          setModalNovoAberto(false);
-          resetForm();
-          await carregarDadosFluxo();
-        } else {
-          setFormErro(res.error || 'Erro ao atualizar movimentação.');
+      // Depois de salvar o lançamento: envia a foto nova ou remove a atual (se pedido)
+      const tratarComprovante = async (id: string): Promise<string | null> => {
+        if (fotoNova) {
+          const r = await TreasuryService.enviarComprovanteFluxo(id, fotoNova.base64);
+          return r.success ? null : r.error || 'falha ao enviar a foto';
         }
-      } else {
-        const res = await TreasuryService.criarFluxoCaixa(payload);
-        if (res.success) {
-          if (onShowToast) onShowToast('Novo lançamento cadastrado com sucesso!');
-          setModalNovoAberto(false);
-          resetForm();
-          await carregarDadosFluxo();
-        } else {
-          setFormErro(res.error || 'Erro ao cadastrar movimentação.');
+        if (removerFotoAtual) {
+          const r = await TreasuryService.removerComprovanteFluxo(id);
+          return r.success ? null : r.error || 'falha ao remover a foto';
         }
+        return null;
+      };
+
+      const res = itemParaEditar
+        ? await TreasuryService.atualizarFluxoCaixa(itemParaEditar.ID || itemParaEditar.id!, payload)
+        : await TreasuryService.criarFluxoCaixa(payload);
+
+      if (!res.success) {
+        setFormErro(res.error || (itemParaEditar ? 'Erro ao atualizar movimentação.' : 'Erro ao cadastrar movimentação.'));
+        return;
       }
+
+      const idSalvo = String(itemParaEditar ? itemParaEditar.ID || itemParaEditar.id : res.data?.ID || res.data?.id || '');
+      const erroFoto = idSalvo ? await tratarComprovante(idSalvo) : fotoNova ? 'lançamento sem ID' : null;
+      if (onShowToast) {
+        onShowToast(
+          erroFoto
+            ? `Lançamento salvo, mas o comprovante não foi salvo: ${erroFoto}`
+            : itemParaEditar
+              ? 'Lançamento atualizado com sucesso!'
+              : 'Novo lançamento cadastrado com sucesso!'
+        );
+      }
+      setModalNovoAberto(false);
+      resetForm();
+      carregarDadosFluxo();
     } catch (err: any) {
       setFormErro(err?.message || 'Erro inesperado ao salvar movimentação.');
     } finally {
@@ -347,6 +424,41 @@ export const FluxoCaixaView: React.FC<FluxoCaixaViewProps> = ({
   };
 
 
+
+  // Exportação: o que está na tabela (período + filtros da tela), sem nova consulta ao banco
+  const montarDadosBalancete = (): DadosBalancete => {
+    const mesLabel = MESES_NOMES.find((m) => m.valor === mesSelecionado)?.label || 'Todos os Meses';
+    const anoLabel = anoSelecionado === 'todos' ? 'todos os anos' : String(anoSelecionado);
+    const periodo = mesSelecionado === 'todos' ? `Ano ${anoLabel}` : `${mesLabel} de ${anoLabel}`;
+    const filtros = [
+      tipoFiltro !== 'todos' ? `Tipo: ${tipoFiltro}` : '',
+      categoriaFiltro !== 'todos' ? `Categoria: ${categoriaFiltro}` : '',
+      buscaTexto.trim() ? `Busca: "${buscaTexto.trim()}"` : '',
+    ]
+      .filter(Boolean)
+      .join(' · ');
+    return {
+      cab: {
+        igreja: igrejaNome,
+        titulo: 'Balancete · Fluxo de Caixa',
+        periodo,
+        filtros: filtros || null,
+        geradoPor: usuarioLogado?.nome || null,
+      },
+      itens: movimentacoes,
+      saldoGeral: kpis.saldoAtual,
+    };
+  };
+
+  const exportarPdf = async () => {
+    const { exportarBalancetePdf } = await import('@/lib/exportar');
+    await exportarBalancetePdf(montarDadosBalancete());
+  };
+
+  const exportarExcel = async () => {
+    const { exportarBalanceteExcel } = await import('@/lib/exportar');
+    await exportarBalanceteExcel(montarDadosBalancete());
+  };
 
   // Cálculos dinâmicos da listagem filtrada
   const totalEntradasFiltradas = useMemo(() => {
@@ -458,6 +570,13 @@ export const FluxoCaixaView: React.FC<FluxoCaixaViewProps> = ({
           >
             <RotateCw className={`w-4 h-4 ${carregando || isRefreshing ? 'animate-spin text-indigo-400' : ''}`} />
           </button>
+
+          <BotaoExportar
+            onPdf={exportarPdf}
+            onExcel={exportarExcel}
+            onErro={onShowToast}
+            desabilitado={carregando}
+          />
 
           {/* Botão Novo Lançamento */}
           <button
@@ -817,6 +936,20 @@ export const FluxoCaixaView: React.FC<FluxoCaixaViewProps> = ({
                       {/* Ações */}
                       <td className="py-3 px-4 text-center whitespace-nowrap">
                         <div className="flex items-center justify-center gap-1.5">
+                          {item.temComprovante && (
+                            <button
+                              onClick={() => abrirComprovante(item)}
+                              disabled={abrindoComprovanteId === String(item.ID || item.id)}
+                              className="p-1.5 rounded-lg text-indigo-300 hover:text-white hover:bg-indigo-900/40 transition-colors cursor-pointer disabled:opacity-50"
+                              title="Ver comprovante"
+                            >
+                              {abrindoComprovanteId === String(item.ID || item.id) ? (
+                                <RotateCw className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <Paperclip className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          )}
                           <button
                             onClick={() => abrirModalEditar(item)}
                             className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700/60 transition-colors cursor-pointer"
@@ -1052,6 +1185,95 @@ export const FluxoCaixaView: React.FC<FluxoCaixaViewProps> = ({
                 />
               </div>
 
+              {/* Comprovante (foto) */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1.5 flex items-center justify-between">
+                  <span>Comprovante (foto) — opcional</span>
+                  <span className="text-[11px] text-slate-400 font-normal">Salvo em WebP, comprimido</span>
+                </label>
+                <input
+                  ref={inputFotoRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={handleEscolherFoto}
+                  className="hidden"
+                />
+                {fotoNova ? (
+                  <div className="flex items-center gap-3 p-2.5 bg-[#141728] border border-[#2b324d] rounded-xl">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={fotoNova.previewUrl} alt="Pré-visualização do comprovante" className="w-16 h-16 object-cover rounded-lg border border-[#2b324d]" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-semibold text-white">Nova foto pronta para enviar</p>
+                      <p className="text-[11px] text-slate-400">Será gravada ao salvar o lançamento</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => inputFotoRef.current?.click()}
+                      className="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold bg-[#22273c] text-slate-200 border border-[#323955] hover:text-white cursor-pointer"
+                    >
+                      Trocar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={descartarFotoNova}
+                      className="p-1.5 rounded-lg text-slate-400 hover:text-rose-400 cursor-pointer"
+                      title="Descartar foto"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                ) : itemParaEditar?.temComprovante && !removerFotoAtual ? (
+                  <div className="flex items-center gap-3 p-2.5 bg-[#141728] border border-[#2b324d] rounded-xl">
+                    <div className="w-10 h-10 rounded-lg bg-indigo-500/15 text-indigo-300 flex items-center justify-center shrink-0">
+                      <Paperclip className="w-4 h-4" />
+                    </div>
+                    <p className="flex-1 text-xs font-semibold text-white">Comprovante anexado</p>
+                    <button
+                      type="button"
+                      onClick={() => itemParaEditar && abrirComprovante(itemParaEditar)}
+                      className="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold bg-[#22273c] text-slate-200 border border-[#323955] hover:text-white cursor-pointer"
+                    >
+                      Ver
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => inputFotoRef.current?.click()}
+                      className="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold bg-[#22273c] text-slate-200 border border-[#323955] hover:text-white cursor-pointer"
+                    >
+                      Trocar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setRemoverFotoAtual(true)}
+                      className="p-1.5 rounded-lg text-slate-400 hover:text-rose-400 cursor-pointer"
+                      title="Remover comprovante"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    <button
+                      type="button"
+                      onClick={() => inputFotoRef.current?.click()}
+                      disabled={preparandoFoto}
+                      className="w-full flex items-center justify-center gap-2 px-3.5 py-2.5 bg-[#141728] border border-dashed border-[#3a4366] hover:border-indigo-500 rounded-xl text-xs font-semibold text-slate-300 hover:text-white transition-colors cursor-pointer disabled:opacity-60"
+                    >
+                      {preparandoFoto ? <RotateCw className="w-4 h-4 animate-spin" /> : <Camera className="w-4 h-4" />}
+                      <span>{preparandoFoto ? 'Preparando foto...' : 'Tirar ou escolher foto do comprovante'}</span>
+                    </button>
+                    {removerFotoAtual && (
+                      <p className="text-[11px] text-amber-300 flex items-center justify-between gap-2">
+                        <span>O comprovante atual será removido ao salvar.</span>
+                        <button type="button" onClick={() => setRemoverFotoAtual(false)} className="underline cursor-pointer">
+                          Desfazer
+                        </button>
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+
               {/* Botões do Rodapé */}
               <div className="pt-3.5 border-t border-[#262b44] flex items-center justify-end gap-3">
                 <button
@@ -1063,7 +1285,7 @@ export const FluxoCaixaView: React.FC<FluxoCaixaViewProps> = ({
                 </button>
                 <button
                   type="submit"
-                  disabled={salvando}
+                  disabled={salvando || preparandoFoto}
                   className="px-5.5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 active:scale-[0.98] text-white text-xs sm:text-sm font-bold shadow-lg shadow-emerald-950/40 flex items-center gap-2 cursor-pointer disabled:opacity-50 transition-all"
                 >
                   {salvando ? <RotateCw className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
@@ -1076,6 +1298,54 @@ export const FluxoCaixaView: React.FC<FluxoCaixaViewProps> = ({
       )}
 
 
+
+      {/* Modal: Visualizar comprovante (link temporário) */}
+      {comprovanteAberto && (
+        <div
+          className="fixed inset-0 z-[60] bg-black/85 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6 animate-in fade-in duration-200"
+          onClick={() => setComprovanteAberto(null)}
+        >
+          <div
+            className="bg-[#1c2030] border border-[#2d3450] rounded-2xl shadow-2xl max-w-3xl w-full max-h-full flex flex-col overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-3.5 border-b border-[#262b44] flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <h4 className="text-sm font-bold text-white truncate">Comprovante · {comprovanteAberto.item.CategoriaFluxo}</h4>
+                <p className="text-[11px] text-slate-400">
+                  {comprovanteAberto.item.DataFluxo
+                    ? new Date(`${comprovanteAberto.item.DataFluxo.slice(0, 10)}T12:00:00Z`).toLocaleDateString('pt-BR')
+                    : '-'}{' '}
+                  · {formatBRL(comprovanteAberto.item.ValorFluxo)}
+                </p>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <a
+                  href={comprovanteAberto.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="p-2 rounded-lg text-slate-300 hover:text-white hover:bg-[#282f4c] transition-colors"
+                  title="Abrir em nova aba"
+                >
+                  <ExternalLink className="w-4 h-4" />
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setComprovanteAberto(null)}
+                  className="p-2 rounded-lg text-slate-300 hover:text-white hover:bg-[#282f4c] transition-colors cursor-pointer"
+                  aria-label="Fechar"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 overflow-auto bg-[#0f1220] flex items-center justify-center p-2">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={comprovanteAberto.url} alt="Comprovante do lançamento" className="max-w-full max-h-[75vh] object-contain" />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Modal: Confirmação de Exclusão */}
       {itemParaExcluir && (

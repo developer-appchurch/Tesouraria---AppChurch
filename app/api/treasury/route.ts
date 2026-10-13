@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { randomUUID } from 'node:crypto';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { converterItemParaLancamento, SEM_SETOR } from '@/lib/treasury-service';
 
@@ -15,6 +16,9 @@ import { converterItemParaLancamento, SEM_SETOR } from '@/lib/treasury-service';
  * paginadas (o Supabase devolve no máx. 1000 linhas por consulta) e a tela de
  * validação usa uma única ação ("painel_validacao") por período.
  */
+
+// sharp (conversão das fotos para WebP) precisa do runtime Node
+export const runtime = 'nodejs';
 
 const PAGE_SIZE = 1000;
 const MAX_ROWS = 20000;
@@ -299,6 +303,80 @@ async function buscarPaginas<T = any>(montarConsulta: () => any): Promise<{ data
       throw new HttpError(413, `O período escolhido tem mais de ${MAX_ROWS.toLocaleString('pt-BR')} registros. Escolha um ano ou mês específico.`);
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Comprovantes (foto) do Fluxo de Caixa
+// Bucket PRIVADO; só este servidor lê/grava. A foto chega já reduzida pelo
+// navegador e aqui é SEMPRE recodificada em WebP (sem metadados/GPS), buscando
+// o menor arquivo que ainda deixe o comprovante legível.
+// ---------------------------------------------------------------------------
+const BUCKET_COMPROVANTES = 'tesouraria-comprovantes';
+const COMPROVANTE_MAX_ENTRADA_BYTES = 3 * 1024 * 1024; // foto recebida (já reduzida no navegador)
+const COMPROVANTE_ALVO_BYTES = 120 * 1024; // meta do WebP final
+const COMPROVANTE_LIMITE_BYTES = 300 * 1024; // mesmo limite do bucket
+const COMPROVANTE_LINK_SEGUNDOS = 300; // link de visualização expira em 5 min
+// Lado maior (px) e qualidade: para no primeiro resultado que cabe na meta
+const COMPROVANTE_TENTATIVAS: Array<[number, number]> = [
+  [1600, 60],
+  [1600, 50],
+  [1400, 45],
+  [1280, 40],
+  [1100, 36],
+  [960, 32],
+  [800, 30],
+];
+
+async function converterComprovanteWebp(entrada: Buffer): Promise<Buffer> {
+  const sharp = (await import('sharp')).default;
+  let meta: { format?: string };
+  try {
+    meta = await sharp(entrada, { limitInputPixels: 40_000_000 }).metadata();
+  } catch {
+    throw new HttpError(400, 'Arquivo de foto inválido.');
+  }
+  if (!meta.format || !['jpeg', 'png', 'webp'].includes(meta.format)) {
+    throw new HttpError(400, 'Envie uma foto (JPG, PNG ou WebP).');
+  }
+  let menor: Buffer | null = null;
+  for (const [lado, qualidade] of COMPROVANTE_TENTATIVAS) {
+    const saida = await sharp(entrada, { limitInputPixels: 40_000_000 })
+      .rotate() // respeita a orientação da câmera; metadados (EXIF/GPS) são descartados
+      .resize({ width: lado, height: lado, fit: 'inside', withoutEnlargement: true })
+      .webp({ quality: qualidade, effort: 6, smartSubsample: true })
+      .toBuffer();
+    if (!menor || saida.length < menor.length) menor = saida;
+    if (saida.length <= COMPROVANTE_ALVO_BYTES) break;
+  }
+  if (!menor || menor.length > COMPROVANTE_LIMITE_BYTES) {
+    throw new HttpError(400, 'Não foi possível reduzir a foto o suficiente. Tire a foto mais de perto, só do comprovante.');
+  }
+  return menor;
+}
+
+/** Lançamento do fluxo de caixa SÓ da igreja da sessão (404 se for de outra igreja ou não existir). */
+async function lancamentoFluxoDaIgreja(
+  supabase: SupabaseClient,
+  igrejaId: string,
+  id: string
+): Promise<{ ID: string; ComprovanteFluxo: string | null }> {
+  if (!UUID_RE.test(id)) throw new HttpError(400, 'ID do lançamento inválido.');
+  const { data, error } = await supabase
+    .from('fluxo_caixa')
+    .select('ID, ComprovanteFluxo')
+    .eq('ID', id)
+    .eq('id_igreja', igrejaId)
+    .maybeSingle();
+  if (error) throw new HttpError(400, error.message);
+  if (!data) throw new HttpError(404, 'Lançamento não encontrado.');
+  return data as any;
+}
+
+/** Apaga o arquivo do comprovante, só se o caminho for da pasta da própria igreja. */
+async function apagarArquivoComprovante(supabase: SupabaseClient, igrejaId: string, caminho: string | null | undefined) {
+  if (!caminho || !caminho.startsWith(`${igrejaId}/`)) return;
+  const { error } = await supabase.storage.from(BUCKET_COMPROVANTES).remove([caminho]);
+  if (error) console.warn('[API /api/treasury] Falha ao apagar comprovante antigo:', error.message);
 }
 
 const unidadesCache = new CacheLimitado<Map<string, Unidade>>(CACHE_MAX_IGREJAS, CACHE_CADASTROS_TTL_MS);
@@ -778,6 +856,8 @@ export async function POST(req: NextRequest) {
           .limit(1)
           .maybeSingle();
         const primeiroAno = primeiro?.data_relatorio ? Number(String(primeiro.data_relatorio).slice(0, 4)) : null;
+        // Nome da igreja: cabeçalho dos relatórios exportados (PDF/Excel)
+        const { data: igreja } = await supabase.from('igrejas').select('nome').eq('id', igrejaId).maybeSingle();
         return NextResponse.json({
           success: true,
           data: {
@@ -786,6 +866,7 @@ export async function POST(req: NextRequest) {
             igreja_id: igrejaId,
             podeGerenciarPermissoes: await podeGerenciar(supabase, membro),
             primeiroAno,
+            igrejaNome: igreja?.nome ? String(igreja.nome) : null,
           },
         });
       }
@@ -1166,6 +1247,8 @@ export async function POST(req: NextRequest) {
           nome_tesoureiro: i.Id_Tesoureiro ? (membrosMap.get(String(i.Id_Tesoureiro)) || 'Tesoureiro') : (membro.nome || 'Tesoureiro'),
           StatusFluxo: String(i.StatusFluxo || 'CONFIRMADO'),
           ObservacoesFluxo: i.ObservacoesFluxo ? String(i.ObservacoesFluxo) : null,
+          // Só indica se há foto; o caminho no storage não sai do servidor
+          temComprovante: Boolean(i.ComprovanteFluxo),
           criado_em: i.criado_em,
           atualizado_em: i.atualizado_em,
         }));
@@ -1375,14 +1458,84 @@ export async function POST(req: NextRequest) {
         const id = String(params.ID || params.id || '').trim();
         if (!id) throw new HttpError(400, 'ID do lançamento é obrigatório.');
 
-        const { error } = await supabase
+        const { data: removidos, error } = await supabase
           .from('fluxo_caixa')
           .delete()
           .eq('ID', id)
-          .eq('id_igreja', igrejaId);
+          .eq('id_igreja', igrejaId)
+          .select('ComprovanteFluxo');
 
         if (error) throw new HttpError(400, error.message);
+        // A foto do comprovante sai junto com o lançamento
+        for (const r of removidos || []) {
+          await apagarArquivoComprovante(supabase, igrejaId, (r as any).ComprovanteFluxo);
+        }
         return NextResponse.json({ success: true });
+      }
+
+      // Foto do comprovante: recebida em base64, gravada sempre como WebP comprimido
+      case 'fluxo_comprovante_enviar': {
+        const id = String(params.ID || params.id || '').trim();
+        const imagem = typeof params.imagem === 'string' ? params.imagem : '';
+        const lancamento = await lancamentoFluxoDaIgreja(supabase, igrejaId, id);
+
+        const base64 = imagem.replace(/^data:[^;]+;base64,/, '');
+        if (!base64 || !/^[A-Za-z0-9+/=]+$/.test(base64)) throw new HttpError(400, 'Foto não recebida.');
+        if (base64.length > Math.ceil((COMPROVANTE_MAX_ENTRADA_BYTES * 4) / 3) + 4) {
+          throw new HttpError(413, 'Foto muito grande.');
+        }
+        const entrada = Buffer.from(base64, 'base64');
+        const webp = await converterComprovanteWebp(entrada);
+
+        const caminho = `${igrejaId}/${lancamento.ID}/${randomUUID()}.webp`;
+        const { error: erroUpload } = await supabase.storage
+          .from(BUCKET_COMPROVANTES)
+          .upload(caminho, webp, { contentType: 'image/webp', cacheControl: '31536000', upsert: false });
+        if (erroUpload) throw new HttpError(400, `Falha ao salvar a foto: ${erroUpload.message}`);
+
+        const { error: erroUpdate } = await supabase
+          .from('fluxo_caixa')
+          .update({ ComprovanteFluxo: caminho, atualizado_em: new Date().toISOString() })
+          .eq('ID', lancamento.ID)
+          .eq('id_igreja', igrejaId);
+        if (erroUpdate) {
+          await apagarArquivoComprovante(supabase, igrejaId, caminho);
+          throw new HttpError(400, erroUpdate.message);
+        }
+        // Foto anterior (se houver) não fica ocupando espaço
+        if (lancamento.ComprovanteFluxo && lancamento.ComprovanteFluxo !== caminho) {
+          await apagarArquivoComprovante(supabase, igrejaId, lancamento.ComprovanteFluxo);
+        }
+        return NextResponse.json({ success: true, data: { temComprovante: true, tamanhoKB: Math.round(webp.length / 1024) } });
+      }
+
+      // Link temporário (5 min) para ver a foto; o bucket não é público
+      case 'fluxo_comprovante_url': {
+        const id = String(params.ID || params.id || '').trim();
+        const lancamento = await lancamentoFluxoDaIgreja(supabase, igrejaId, id);
+        if (!lancamento.ComprovanteFluxo || !lancamento.ComprovanteFluxo.startsWith(`${igrejaId}/`)) {
+          throw new HttpError(404, 'Este lançamento não tem comprovante.');
+        }
+        const { data, error } = await supabase.storage
+          .from(BUCKET_COMPROVANTES)
+          .createSignedUrl(lancamento.ComprovanteFluxo, COMPROVANTE_LINK_SEGUNDOS);
+        if (error || !data?.signedUrl) throw new HttpError(400, error?.message || 'Não foi possível abrir o comprovante.');
+        return NextResponse.json({ success: true, data: { url: data.signedUrl, expiraEm: COMPROVANTE_LINK_SEGUNDOS } });
+      }
+
+      case 'fluxo_comprovante_remover': {
+        const id = String(params.ID || params.id || '').trim();
+        const lancamento = await lancamentoFluxoDaIgreja(supabase, igrejaId, id);
+        if (lancamento.ComprovanteFluxo) {
+          const { error } = await supabase
+            .from('fluxo_caixa')
+            .update({ ComprovanteFluxo: null, atualizado_em: new Date().toISOString() })
+            .eq('ID', lancamento.ID)
+            .eq('id_igreja', igrejaId);
+          if (error) throw new HttpError(400, error.message);
+          await apagarArquivoComprovante(supabase, igrejaId, lancamento.ComprovanteFluxo);
+        }
+        return NextResponse.json({ success: true, data: { temComprovante: false } });
       }
 
       case 'fluxo_categorias': {

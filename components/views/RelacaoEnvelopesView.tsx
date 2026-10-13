@@ -14,6 +14,10 @@ import {
 import { LancamentoTesouraria, UnidadeCadastrada } from '@/lib/types';
 import { formatBRL, formatDateBR } from '@/lib/utils';
 import { TreasuryService, SEM_SETOR } from '@/lib/treasury-service';
+import { BotaoExportar } from '@/components/BotaoExportar';
+import type { DadosEnvelopes } from '@/lib/exportar';
+
+const NOMES_MESES = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
 
 interface RelacaoEnvelopesViewProps {
   lancamentos: LancamentoTesouraria[];
@@ -27,6 +31,9 @@ interface RelacaoEnvelopesViewProps {
   onShowToast: (msg: string) => void;
   /** Unidades carregadas uma vez pela página (esta tela não busca por conta própria) */
   unidades?: UnidadeCadastrada[];
+  /** Cabeçalho dos arquivos exportados */
+  igrejaNome?: string | null;
+  usuarioNome?: string | null;
 }
 
 export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
@@ -37,6 +44,8 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
   onRefresh,
   onShowToast,
   unidades,
+  igrejaNome = null,
+  usuarioNome = null,
 }) => {
   const [modalDuplicadosAberto, setModalDuplicadosAberto] = useState<boolean>(false);
   const [relatorioParaExcluir, setRelatorioParaExcluir] = useState<LancamentoTesouraria | null>(null);
@@ -445,6 +454,41 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
     };
   }, [lancamentos, setorSelecionado, isTodosSetores, anoNumFiltro, mesNumFiltro, semanas]);
 
+  // Exportação: exatamente o que a tabela mostra (mesmas células, semanas e cores), sem nova consulta
+  const montarDadosExportacao = (): DadosEnvelopes => {
+    const ano = typeof anoSelecionado === 'number' && anoSelecionado > 2000 ? anoSelecionado : new Date().getFullYear();
+    const mesNum = mesSelecionado && mesSelecionado !== 'todos' ? parseInt(mesSelecionado, 10) : new Date().getMonth() + 1;
+    return {
+      cab: {
+        igreja: igrejaNome,
+        titulo: 'Relação de Envelopes',
+        periodo: `${NOMES_MESES[mesNum - 1] || ''} de ${ano}`,
+        filtros: `Setor: ${isTodosSetores ? 'Todos os setores' : setorSelecionado}`,
+        geradoPor: usuarioNome,
+      },
+      semanas: semanas.map((s) => ({ num: s.num, data: s.data })),
+      linhas: celulasDoSetor.map((c) => ({
+        setor: c.setor,
+        celula: c.nome,
+        lider: c.lider,
+        semanas: semanas.map((sem) => {
+          const v = getValores(c.id, c.nome, c.setor, sem);
+          return { temDado: v.temDado, validado: v.validadoTesouraria, pix: Number(v.pix ?? 0), especie: Number(v.dinheiro ?? 0) };
+        }),
+      })),
+    };
+  };
+
+  const exportarPdf = async () => {
+    const { exportarEnvelopesPdf } = await import('@/lib/exportar');
+    await exportarEnvelopesPdf(montarDadosExportacao());
+  };
+
+  const exportarExcel = async () => {
+    const { exportarEnvelopesExcel } = await import('@/lib/exportar');
+    await exportarEnvelopesExcel(montarDadosExportacao());
+  };
+
   const handleConfirmarExclusao = async () => {
     if (!relatorioParaExcluir) return;
     setIsExcluindo(true);
@@ -506,6 +550,15 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
         </div>
       ) : (
         <>
+          <div className="flex justify-end -mb-1">
+            <BotaoExportar
+              onPdf={exportarPdf}
+              onExcel={exportarExcel}
+              onErro={onShowToast}
+              desabilitado={celulasDoSetor.length === 0}
+            />
+          </div>
+
           {/* 1. Top SKU Cards */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5 sm:gap-4">
             {/* Card 1: Envelopes Validados */}

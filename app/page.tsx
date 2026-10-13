@@ -54,6 +54,8 @@ export default function TreasuryApp() {
 
   // Anos com relatórios (do primeiro até o atual), para os seletores de ano de todas as telas
   const [primeiroAno, setPrimeiroAno] = useState<number | null>(null);
+  // Nome da igreja da sessão: cabeçalho dos PDFs/planilhas exportados
+  const [igrejaNome, setIgrejaNome] = useState<string | null>(null);
   const anosComRelatorios = useMemo(() => {
     const atual = new Date().getFullYear();
     const inicio = Math.min(primeiroAno ?? atual, atual);
@@ -64,6 +66,7 @@ export default function TreasuryApp() {
     const sessao = await TreasuryService.fetchMinhaSessao();
     setPodeGerenciarPermissoes(sessao?.podeGerenciarPermissoes === true);
     setPrimeiroAno(sessao?.primeiroAno ?? null);
+    setIgrejaNome(sessao?.igrejaNome ?? null);
   }, []);
 
   // Filter states per view
@@ -211,6 +214,7 @@ export default function TreasuryApp() {
     setUnidadesCadastradas([]);
     setPodeGerenciarPermissoes(false);
     setPrimeiroAno(null);
+    setIgrejaNome(null);
     setPendingCount(0);
     setSessaoManual(null);
     setIsLoggedOut(true);
@@ -346,6 +350,8 @@ export default function TreasuryApp() {
               onRefresh={handleRefresh}
               onShowToast={showToast}
               unidades={unidadesCadastradas}
+              igrejaNome={igrejaNome}
+              usuarioNome={usuarioLogado?.nome || null}
             />
           </div>
 
@@ -361,6 +367,7 @@ export default function TreasuryApp() {
               onShowToast={showToast}
               anosBase={anosComRelatorios}
               usuarioLogado={usuarioLogado}
+              igrejaNome={igrejaNome}
             />
           </div>
 

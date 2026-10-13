@@ -506,13 +506,14 @@ export const TreasuryService = {
   /**
    * Permissões da sessão atual, decididas pelo servidor (ex.: se pode gerenciar acessos).
    */
-  async fetchMinhaSessao(): Promise<{ podeGerenciarPermissoes: boolean; primeiroAno: number | null } | null> {
-    const res = await callTreasuryApi<{ podeGerenciarPermissoes: boolean; primeiroAno: number | null }>('minha_sessao');
+  async fetchMinhaSessao(): Promise<{ podeGerenciarPermissoes: boolean; primeiroAno: number | null; igrejaNome: string | null } | null> {
+    const res = await callTreasuryApi<{ podeGerenciarPermissoes: boolean; primeiroAno: number | null; igrejaNome?: string | null }>('minha_sessao');
     if (!res.success || !res.data) return null;
     const primeiroAno = Number(res.data.primeiroAno);
     return {
       podeGerenciarPermissoes: res.data.podeGerenciarPermissoes === true,
       primeiroAno: Number.isFinite(primeiroAno) && primeiroAno > 2000 ? primeiroAno : null,
+      igrejaNome: res.data.igrejaNome ? String(res.data.igrejaNome) : null,
     };
   },
 
@@ -951,6 +952,27 @@ export const TreasuryService = {
    */
   async excluirFluxoCaixa(id: string): Promise<{ success: boolean; error?: string }> {
     const res = await callTreasuryApi('fluxo_excluir', { ID: id });
+    if (res.success) invalidarFluxo();
+    return { success: Boolean(res.success), error: res.error };
+  },
+
+  /**
+   * Envia a foto do comprovante (já reduzida no navegador). O servidor grava sempre em WebP.
+   */
+  async enviarComprovanteFluxo(id: string, imagemBase64: string): Promise<{ success: boolean; tamanhoKB?: number; error?: string }> {
+    const res = await callTreasuryApi<{ temComprovante: boolean; tamanhoKB: number }>('fluxo_comprovante_enviar', { ID: id, imagem: imagemBase64 });
+    if (res.success) invalidarFluxo();
+    return { success: Boolean(res.success), tamanhoKB: res.data?.tamanhoKB, error: res.error };
+  },
+
+  /** Link temporário (5 min) para ver o comprovante. */
+  async linkComprovanteFluxo(id: string): Promise<{ success: boolean; url?: string; error?: string }> {
+    const res = await callTreasuryApi<{ url: string }>('fluxo_comprovante_url', { ID: id });
+    return { success: Boolean(res.success && res.data?.url), url: res.data?.url, error: res.error };
+  },
+
+  async removerComprovanteFluxo(id: string): Promise<{ success: boolean; error?: string }> {
+    const res = await callTreasuryApi('fluxo_comprovante_remover', { ID: id });
     if (res.success) invalidarFluxo();
     return { success: Boolean(res.success), error: res.error };
   },

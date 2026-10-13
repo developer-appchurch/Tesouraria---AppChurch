@@ -190,6 +190,8 @@ export interface FluxoCaixaItem {
   nome_tesoureiro?: string;
   StatusFluxo: 'CONFIRMADO' | 'PENDENTE' | string;
   ObservacoesFluxo?: string | null;
+  /** true quando há foto de comprovante (o caminho no storage fica só no servidor) */
+  temComprovante?: boolean;
   criado_em?: string;
   atualizado_em?: string;
 }
