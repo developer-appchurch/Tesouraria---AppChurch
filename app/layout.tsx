@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from 'next';
+import { Analytics } from '@vercel/analytics/next';
 import './globals.css';
 
 export const viewport: Viewport = {
@@ -39,6 +40,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="pt-BR">
       <body className="bg-[#1c2030] text-slate-100 antialiased selection:bg-indigo-600 selection:text-white" suppressHydrationWarning>
         {children}
+        <Analytics />
       </body>
     </html>
   );
