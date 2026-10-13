@@ -18,9 +18,14 @@ import { converterItemParaLancamento, SEM_SETOR } from '@/lib/treasury-service';
 
 const PAGE_SIZE = 1000;
 const MAX_ROWS = 20000;
-const CACHE_TTL_MS = 5 * 60 * 1000; // unidades e membros por igreja
+const CACHE_TTL_MS = 5 * 60 * 1000; // dados derivados de relatórios por igreja
+// Cadastros que quase nunca mudam (unidades, líderes, nomes): validade maior.
+// O botão "Atualizar" do app envia forcar: true e relê na hora.
+const CACHE_CADASTROS_TTL_MS = 15 * 60 * 1000;
 const CACHE_MAX_IGREJAS = 200;
-const AUTH_CACHE_TTL_MS = 2 * 60 * 1000; // sessão e permissão: acesso removido deixa de valer em até 2 min
+// Sessão e permissão: acesso removido deixa de valer em até 5 min (na mesma instância, na hora)
+const AUTH_CACHE_TTL_MS = 5 * 60 * 1000;
+const LOTE_IDS = 150; // ids por consulta .in() (mantém a URL curta)
 const AUTH_CACHE_MAX = 5000;
 const LIMITE_REQ_POR_MINUTO = 120; // por usuário, por instância do servidor
 const FILTRO_PENDENTE = 'tesouraria_recebido.is.null,tesouraria_recebido.eq.false';
@@ -37,7 +42,14 @@ type Unidade = {
   lideres?: string[];
   lider_nome?: string | null;
 };
-type Membro = { id: string; nome: string; igreja_id: string; podeGerenciarPermissoes: boolean };
+type Membro = {
+  id: string;
+  nome: string;
+  igreja_id: string;
+  papel_id: string | null;
+  /** Calculado só quando necessário (tela Permissões / minha_sessao) e guardado junto da sessão */
+  podeGerenciarPermissoes?: boolean;
+};
 
 /** Códigos do AppChurch (tabela permissoes) que liberam a gestão de acessos da tesouraria. */
 const CODIGOS_ADMIN = ['church:admin', 'permissions:manage'];
@@ -68,6 +80,10 @@ class CacheLimitado<V> {
     while (this.itens.size > this.max) {
       this.itens.delete(this.itens.keys().next().value as string);
     }
+  }
+
+  delete(chave: string) {
+    this.itens.delete(chave);
   }
 
   deleteWhere(teste: (valor: V) => boolean) {
@@ -163,13 +179,17 @@ async function autenticar(req: NextRequest, supabase: SupabaseClient): Promise<M
   const cached = authCache.get(token);
   if (cached) return cached;
 
-  const { data: userData, error: userErr } = await supabase.auth.getUser(token);
-  if (userErr || !userData?.user) throw new HttpError(401, 'Sessão expirada. Faça login novamente.');
+  // Valida o token localmente (assinatura ES256 + validade) com a chave pública do projeto,
+  // sem uma chamada ao Supabase Auth por requisição. Se o projeto usar chave simétrica,
+  // a biblioteca recorre sozinha à verificação no servidor de Auth.
+  const { data: claimsData, error: claimsErr } = await supabase.auth.getClaims(token);
+  const authUserId = claimsData?.claims?.sub;
+  if (claimsErr || !authUserId) throw new HttpError(401, 'Sessão expirada. Faça login novamente.');
 
   const { data: membro } = await supabase
     .from('membros')
     .select('id, nome, igreja_id, acesso_ativo, papel_id')
-    .eq('auth_user_id', userData.user.id)
+    .eq('auth_user_id', authUserId)
     .maybeSingle();
 
   if (!membro || !membro.igreja_id || membro.acesso_ativo === false) {
@@ -192,7 +212,7 @@ async function autenticar(req: NextRequest, supabase: SupabaseClient): Promise<M
     id: String(membro.id),
     nome: String(membro.nome || ''),
     igreja_id: String(membro.igreja_id),
-    podeGerenciarPermissoes: await temPermissaoAdmin(supabase, String(membro.id), membro.papel_id),
+    papel_id: membro.papel_id ? String(membro.papel_id) : null,
   };
   authCache.set(token, result);
   return result;
@@ -223,8 +243,16 @@ async function temPermissaoAdmin(supabase: SupabaseClient, membroId: string, pap
   return concedidas.some((id) => !revogadas.has(id));
 }
 
-function exigirAdmin(membro: Membro) {
-  if (!membro.podeGerenciarPermissoes) {
+/** Admin calculado na primeira vez que for preciso e guardado na sessão em cache. */
+async function podeGerenciar(supabase: SupabaseClient, membro: Membro): Promise<boolean> {
+  if (membro.podeGerenciarPermissoes === undefined) {
+    membro.podeGerenciarPermissoes = await temPermissaoAdmin(supabase, membro.id, membro.papel_id);
+  }
+  return membro.podeGerenciarPermissoes;
+}
+
+async function exigirAdmin(supabase: SupabaseClient, membro: Membro) {
+  if (!(await podeGerenciar(supabase, membro))) {
     throw new HttpError(403, 'Apenas a liderança da igreja (administrador) pode gerenciar acessos à Tesouraria.');
   }
 }
@@ -255,16 +283,53 @@ async function buscarTodos<T = any>(montarConsulta: () => any): Promise<T[]> {
   }
 }
 
-const unidadesCache = new CacheLimitado<Map<string, Unidade>>(CACHE_MAX_IGREJAS, CACHE_TTL_MS);
-const membrosCache = new CacheLimitado<Map<string, string>>(CACHE_MAX_IGREJAS, CACHE_TTL_MS);
+/**
+ * Como buscarTodos, mas devolve o erro em vez de lançar (para tratar "tabela inexistente").
+ * Sem paginação, o Supabase corta em 1.000 linhas sem avisar: o saldo sairia errado.
+ */
+async function buscarPaginas<T = any>(montarConsulta: () => any): Promise<{ data: T[]; error: any }> {
+  const out: T[] = [];
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const { data, error } = await montarConsulta().range(from, from + PAGE_SIZE - 1);
+    if (error) return { data: out, error };
+    const rows = (data || []) as T[];
+    out.push(...rows);
+    if (rows.length < PAGE_SIZE) return { data: out, error: null };
+    if (out.length >= MAX_ROWS) {
+      throw new HttpError(413, `O período escolhido tem mais de ${MAX_ROWS.toLocaleString('pt-BR')} registros. Escolha um ano ou mês específico.`);
+    }
+  }
+}
+
+const unidadesCache = new CacheLimitado<Map<string, Unidade>>(CACHE_MAX_IGREJAS, CACHE_CADASTROS_TTL_MS);
+const lideresCache = new CacheLimitado<Map<string, string[]>>(CACHE_MAX_IGREJAS, CACHE_CADASTROS_TTL_MS);
+// Nomes de membros já buscados, por igreja (só os ids que aparecem nos relatórios)
+const nomesCache = new CacheLimitado<Map<string, string>>(CACHE_MAX_IGREJAS, CACHE_CADASTROS_TTL_MS);
+const listaUnidadesCache = new CacheLimitado<any[]>(CACHE_MAX_IGREJAS, CACHE_CADASTROS_TTL_MS);
+
+function emLotes<T>(itens: T[], tamanho = LOTE_IDS): T[][] {
+  const lotes: T[][] = [];
+  for (let i = 0; i < itens.length; i += tamanho) lotes.push(itens.slice(i, i + tamanho));
+  return lotes;
+}
+
+/** Descarta os cadastros em cache da igreja (botão "Atualizar" do app). */
+function invalidarCadastros(igrejaId: string) {
+  [unidadesCache, lideresCache, nomesCache, listaUnidadesCache].forEach((c: any) => c.delete(igrejaId));
+  inicioCache.delete(igrejaId);
+}
 
 /**
  * Nomes dos líderes por unidade, SOMENTE da igreja informada.
  * unidade_lideres não tem igreja_id: o filtro é feito pelo join com unidades.
- * Membros são paginados (o Supabase devolve no máx. 1000 linhas por consulta).
+ * Busca só os membros que são líderes (vínculo em unidade_lideres ou função
+ * "lider"), em vez de ler todos os membros da igreja (~1.150 linhas) a cada vez.
  */
 async function carregarLideresPorUnidade(supabase: SupabaseClient, igrejaId: string) {
-  const [lideres, membros] = await Promise.all([
+  const emCache = lideresCache.get(igrejaId);
+  if (emCache) return emCache;
+
+  const [vinculos, porFuncao] = await Promise.all([
     buscarTodos<any>(() =>
       supabase
         .from('unidade_lideres')
@@ -273,15 +338,24 @@ async function carregarLideresPorUnidade(supabase: SupabaseClient, igrejaId: str
         .eq('unidades.igreja_id', igrejaId)
         .order('id')
     ),
+    // Mesma regra de antes: função contendo "lider" (sem acento, sem diferenciar maiúsculas)
     buscarTodos<any>(() =>
-      supabase.from('membros').select('id, nome, unidade_id, funcao').eq('igreja_id', igrejaId).order('id')
+      supabase
+        .from('membros')
+        .select('id, nome, unidade_id')
+        .eq('igreja_id', igrejaId)
+        .ilike('funcao', '%lider%')
+        .not('unidade_id', 'is', null)
+        .order('id')
     ),
   ]);
 
-  const nomes = new Map<string, string>();
-  membros.forEach((m) => {
-    if (m.id && m.nome) nomes.set(String(m.id), String(m.nome).trim());
-  });
+  const nomes = await nomesDeMembros(
+    supabase,
+    igrejaId,
+    vinculos.map((ul) => ul.pessoa_id)
+  );
+  porFuncao.forEach((m) => m.id && m.nome && nomes.set(String(m.id), String(m.nome).trim()));
 
   const porUnidade = new Map<string, string[]>();
   const adicionar = (unidadeId: string, nome: string) => {
@@ -289,16 +363,38 @@ async function carregarLideresPorUnidade(supabase: SupabaseClient, igrejaId: str
     if (!lista.includes(nome)) lista.push(nome);
     porUnidade.set(unidadeId, lista);
   };
-  lideres.forEach((ul) => {
+  vinculos.forEach((ul) => {
     const nome = nomes.get(String(ul.pessoa_id));
     if (nome) adicionar(String(ul.unidade_id), nome);
   });
-  membros.forEach((m) => {
-    if (m.unidade_id && m.nome && String(m.funcao || '').toLowerCase().includes('lider')) {
-      adicionar(String(m.unidade_id), String(m.nome).trim());
-    }
+  porFuncao.forEach((m) => {
+    if (m.unidade_id && m.nome) adicionar(String(m.unidade_id), String(m.nome).trim());
   });
+  lideresCache.set(igrejaId, porUnidade);
   return porUnidade;
+}
+
+/**
+ * Nomes dos membros pedidos (só da igreja), buscando no banco apenas os que ainda
+ * não estão em cache. Substitui a leitura de todos os membros da igreja.
+ */
+async function nomesDeMembros(supabase: SupabaseClient, igrejaId: string, ids: any[]): Promise<Map<string, string>> {
+  let cache = nomesCache.get(igrejaId);
+  if (!cache) {
+    cache = new Map<string, string>();
+    nomesCache.set(igrejaId, cache);
+  }
+  const faltando = Array.from(new Set(ids.filter(Boolean).map(String))).filter((id) => !cache!.has(id) && UUID_RE.test(id));
+  for (const lote of emLotes(faltando)) {
+    const { data, error } = await supabase.from('membros').select('id, nome').eq('igreja_id', igrejaId).in('id', lote);
+    if (error) throw new HttpError(400, error.message);
+    lote.forEach((id) => cache!.set(id, '')); // ids sem membro na igreja não são buscados de novo
+    (data || []).forEach((m: any) => cache!.set(String(m.id), String(m.nome || '').trim()));
+  }
+  // Devolve uma cópia só com nomes preenchidos
+  const out = new Map<string, string>();
+  cache.forEach((nome, id) => nome && out.set(id, nome));
+  return out;
 }
 
 async function getUnidadesMap(supabase: SupabaseClient, igrejaId: string) {
@@ -324,18 +420,6 @@ async function getUnidadesMap(supabase: SupabaseClient, igrejaId: string) {
     if (u.pai_id && map.has(String(u.pai_id))) u.setor_nome = map.get(String(u.pai_id))?.nome;
   });
   unidadesCache.set(igrejaId, map);
-  return map;
-}
-
-async function getMembrosMap(supabase: SupabaseClient, igrejaId: string) {
-  const emCache = membrosCache.get(igrejaId);
-  if (emCache) return emCache;
-  const rows = await buscarTodos<{ id: string; nome: string }>(() =>
-    supabase.from('membros').select('id, nome').eq('igreja_id', igrejaId).order('id')
-  );
-  const map = new Map<string, string>();
-  rows.forEach((m) => map.set(String(m.id), String(m.nome)));
-  membrosCache.set(igrejaId, map);
   return map;
 }
 
@@ -411,9 +495,8 @@ async function carregarRelatorios(
   const fim = deslocar(periodo.fim, params.margemDias || 0);
   const somentePendentes = typeof params.somentePendentes === 'boolean' ? params.somentePendentes : null;
 
-  const [unidadesMap, membrosMap, rows] = await Promise.all([
+  const [unidadesMap, rows] = await Promise.all([
     getUnidadesMap(supabase, igrejaId),
-    getMembrosMap(supabase, igrejaId),
     buscarTodos<any>(() => {
       let q = supabase
         .from('relatorios_semanais')
@@ -428,6 +511,13 @@ async function carregarRelatorios(
       return q;
     }),
   ]);
+
+  // Nomes de quem lançou e de quem validou: só os que aparecem no período
+  const membrosMap = await nomesDeMembros(
+    supabase,
+    igrejaId,
+    rows.flatMap((r: any) => [r.lancado_por, r.tesoureiro_id])
+  );
 
   const setorFiltro = params.setorId && params.setorId !== 'todos' ? String(params.setorId).toLowerCase() : null;
 
@@ -694,7 +784,7 @@ export async function POST(req: NextRequest) {
             id: membro.id,
             nome: membro.nome,
             igreja_id: igrejaId,
-            podeGerenciarPermissoes: membro.podeGerenciarPermissoes,
+            podeGerenciarPermissoes: await podeGerenciar(supabase, membro),
             primeiroAno,
           },
         });
@@ -717,7 +807,12 @@ export async function POST(req: NextRequest) {
       }
 
       case 'listar_unidades': {
-        // Sempre a igreja da sessão: nunca aceitar igreja_id vindo do navegador
+        // Sempre a igreja da sessão: nunca aceitar igreja_id vindo do navegador.
+        // Cadastro muda pouco: resposta em cache por igreja; "Atualizar" (forcar) relê tudo.
+        if (params.forcar === true) invalidarCadastros(igrejaId);
+        const emCache = listaUnidadesCache.get(igrejaId);
+        if (emCache) return NextResponse.json({ success: true, data: emCache });
+
         const [rows, lideresPorUnidade] = await Promise.all([
           buscarTodos<any>(() =>
             supabase
@@ -751,11 +846,12 @@ export async function POST(req: NextRequest) {
           };
         });
 
+        listaUnidadesCache.set(igrejaId, data);
         return NextResponse.json({ success: true, data });
       }
 
       case 'listar_permissoes': {
-        exigirAdmin(membro);
+        await exigirAdmin(supabase, membro);
         const { data: permissoes, error: permError } = await supabase
           .from('tesouraria_permissao')
           .select('*')
@@ -794,7 +890,7 @@ export async function POST(req: NextRequest) {
       }
 
       case 'buscar_membros': {
-        exigirAdmin(membro);
+        await exigirAdmin(supabase, membro);
         const busca = String(params.busca || '').trim();
         let q = supabase
           .from('membros')
@@ -814,7 +910,7 @@ export async function POST(req: NextRequest) {
       }
 
       case 'adicionar_permissao': {
-        exigirAdmin(membro);
+        await exigirAdmin(supabase, membro);
         const membroId = String(params.membro_id || '').trim();
         if (!UUID_RE.test(membroId)) throw new HttpError(400, 'membro_id inválido.');
 
@@ -855,7 +951,7 @@ export async function POST(req: NextRequest) {
         const id = params.id ? String(params.id).trim() : null;
         const membroId = params.membro_id ? String(params.membro_id).trim() : null;
 
-        exigirAdmin(membro);
+        await exigirAdmin(supabase, membro);
         if (!id && !membroId) throw new HttpError(400, 'ID ou membro_id é obrigatório para remover permissão.');
         if (membroId === membro.id) {
           throw new HttpError(400, 'Você não pode remover o seu próprio acesso.');
@@ -988,12 +1084,14 @@ export async function POST(req: NextRequest) {
         const categoria = params.categoria ? String(params.categoria).trim() : 'todos';
         const busca = params.busca ? String(params.busca).trim().toLowerCase() : '';
 
+        const montarListar = () => {
         let q = supabase
           .from('fluxo_caixa')
           .select('*')
           .eq('id_igreja', igrejaId)
           .order('DataFluxo', { ascending: false })
-          .order('criado_em', { ascending: false });
+          .order('criado_em', { ascending: false })
+          .order('ID', { ascending: true });
 
         if (ano !== 'todos' && ano !== 'todos os anos' && !isNaN(Number(ano))) {
           const anoNum = Number(ano);
@@ -1019,8 +1117,10 @@ export async function POST(req: NextRequest) {
         if (categoria !== 'todos' && categoria !== 'todas as categorias') {
           q = q.eq('CategoriaFluxo', categoria);
         }
+        return q;
+        };
 
-        const { data: rows, error } = await q;
+        const { data: rows, error } = await buscarPaginas<any>(montarListar);
 
         if (error) {
           if (error.code === 'PGRST205' || error.code === '42P01' || error.message.includes('does not exist')) {
@@ -1048,13 +1148,7 @@ export async function POST(req: NextRequest) {
         const tesoureiroIds = Array.from(new Set(itens.map((i: any) => i.Id_Tesoureiro).filter(Boolean)));
         const membrosMap = new Map<string, string>();
         if (tesoureiroIds.length > 0) {
-          const { data: membrosList } = await supabase
-            .from('membros')
-            .select('id, nome')
-            .in('id', tesoureiroIds);
-          (membrosList || []).forEach((m: any) => {
-            membrosMap.set(String(m.id), String(m.nome));
-          });
+          (await nomesDeMembros(supabase, igrejaId, tesoureiroIds)).forEach((nome, id) => membrosMap.set(id, nome));
         }
 
         const dataFormatada = itens.map((i: any) => ({
@@ -1082,10 +1176,14 @@ export async function POST(req: NextRequest) {
         const anoNum = (!isNaN(Number(ano)) && Number(ano) > 2000) ? Number(ano) : new Date().getFullYear();
         const mesNum = (!isNaN(Number(mes)) && Number(mes) >= 1 && Number(mes) <= 12) ? Number(mes) : null;
 
-        const { data: todos, error } = await supabase
-          .from('fluxo_caixa')
-          .select('ID, TipoFluxo, ValorFluxo, DataFluxo, StatusFluxo')
-          .eq('id_igreja', igrejaId);
+        // Histórico completo para o saldo (paginado: acima de 1.000 lançamentos o total não pode ser cortado)
+        const { data: todos, error } = await buscarPaginas<any>(() =>
+          supabase
+            .from('fluxo_caixa')
+            .select('ID, TipoFluxo, ValorFluxo, DataFluxo, StatusFluxo')
+            .eq('id_igreja', igrejaId)
+            .order('ID', { ascending: true })
+        );
 
         const mesesAbrev = ['JAN', 'FEV', 'MAR', 'ABR', 'MAI', 'JUN', 'JUL', 'AGO', 'SET', 'OUT', 'NOV', 'DEZ'];
         const mesesNomes = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
@@ -1304,10 +1402,13 @@ export async function POST(req: NextRequest) {
           'Outros'
         ];
 
-        const { data: rows } = await supabase
-          .from('fluxo_caixa')
-          .select('CategoriaFluxo')
-          .eq('id_igreja', igrejaId);
+        const { data: rows } = await buscarPaginas<any>(() =>
+          supabase
+            .from('fluxo_caixa')
+            .select('CategoriaFluxo')
+            .eq('id_igreja', igrejaId)
+            .order('ID', { ascending: true })
+        );
 
         const catsSet = new Set(defaultCategorias);
         (rows || []).forEach((r: any) => {

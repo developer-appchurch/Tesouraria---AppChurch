@@ -43,6 +43,10 @@ export default function TreasuryApp() {
   const [unidadesCadastradas, setUnidadesCadastradas] = useState<UnidadeCadastrada[]>([]);
   const [usuarios, setUsuarios] = useState<PermissaoUsuario[]>([]);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
+  // Cada clique em "Atualizar" incrementa: as telas recarregam UMA vez por clique
+  // (com o booleano isRefreshing elas recarregavam ao ligar e ao desligar, e a 2ª
+  // execução podia descartar a resposta nova). Tela escondida atualiza ao abrir.
+  const [refreshToken, setRefreshToken] = useState<number>(0);
   const [notificacao, setNotificacao] = useState<string | null>(null);
   const [isMobileNavOpen, setIsMobileNavOpen] = useState<boolean>(false);
   // Decidido pelo servidor (papel church:admin / permissions:manage do AppChurch)
@@ -168,6 +172,7 @@ export default function TreasuryApp() {
   // Estável entre renderizações (useCallback): telas que recebem onRefresh não re-executam efeitos à toa
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
+    setRefreshToken((n) => n + 1);
     try {
       const [ok, unids] = await Promise.all([
         precisaLancamentos ? carregarDados(true) : Promise.resolve(true),
@@ -319,6 +324,7 @@ export default function TreasuryApp() {
               onSelectAno={setAnoValidar}
               onRefresh={handleRefresh}
               isRefreshing={isRefreshing}
+              refreshToken={refreshToken}
               onShowToast={showToast}
               usuarioLogado={usuarioLogado}
               usuarios={usuarios}
@@ -339,6 +345,7 @@ export default function TreasuryApp() {
               onSelectSetor={setSetorEnvelopes}
               onRefresh={handleRefresh}
               onShowToast={showToast}
+              unidades={unidadesCadastradas}
             />
           </div>
 
@@ -349,6 +356,7 @@ export default function TreasuryApp() {
               onSelectAno={setAnoFluxo}
               onRefresh={handleRefresh}
               isRefreshing={isRefreshing}
+              refreshToken={refreshToken}
               onToggleMobileMenu={() => setIsMobileNavOpen((prev) => !prev)}
               onShowToast={showToast}
               anosBase={anosComRelatorios}
@@ -363,6 +371,7 @@ export default function TreasuryApp() {
               onSelectAno={setAnoDashboard}
               onRefresh={handleRefresh}
               isRefreshing={isRefreshing}
+              refreshToken={refreshToken}
               onToggleMobileMenu={() => setIsMobileNavOpen((prev) => !prev)}
               onShowToast={showToast}
               unidades={unidadesCadastradas}

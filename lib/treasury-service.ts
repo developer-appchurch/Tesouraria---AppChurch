@@ -28,6 +28,25 @@ let memoryUnidades: UnidadeCadastrada[] | null = null;
 const dashboardCache = new Map<string, { data: AgregadoDashboard[]; at: number }>();
 let lastUnidadesFetch = 0;
 const CACHE_TTL_MS = 3 * 60 * 1000; // 3 minutes cache (no polling)
+// Unidades, líderes e categorias quase nunca mudam: validade maior. O botão Atualizar força a releitura.
+const CACHE_TTL_CADASTROS_MS = 30 * 60 * 1000;
+// Pedido de unidades em andamento: telas que pedem ao mesmo tempo compartilham a mesma requisição
+let unidadesEmAndamento: Promise<UnidadeCadastrada[]> | null = null;
+
+// Fluxo de caixa: lista + indicadores por período ("ano|mes") e categorias
+type FluxoPeriodo = {
+  lista: import('./types').FluxoCaixaItem[];
+  kpis: import('./types').FluxoCaixaKPIs;
+  demonstrativo: import('./types').FluxoMensalDemonstrativo[];
+  anosDisponiveis: number[];
+  tabelaCriada: boolean;
+};
+const fluxoCache = new Map<string, { data: FluxoPeriodo; at: number }>();
+let fluxoCategoriasCache: { data: string[]; at: number } | null = null;
+function invalidarFluxo() {
+  fluxoCache.clear();
+  fluxoCategoriasCache = null;
+}
 
 // Caches mantidos fora do serviço (ex.: telas) se registram aqui para serem
 // limpos junto com os do serviço no login/logout: dados de uma igreja nunca
@@ -322,6 +341,8 @@ export const TreasuryService = {
     dashboardCache.clear();
     lastLancamentosFetch = 0;
     lastUnidadesFetch = 0;
+    unidadesEmAndamento = null;
+    invalidarFluxo();
     limpadoresDeCache.forEach((limpar) => limpar());
   },
 
@@ -565,15 +586,26 @@ export const TreasuryService = {
    * Obtém todas as unidades cadastradas (id, nome, pai_id, ativo) da igreja
    */
   async fetchUnidadesCadastradas(forceRefresh = false): Promise<UnidadeCadastrada[]> {
-    // Cache em memória: unidades mudam raramente, não precisam ser buscadas a cada renderização
-    const now = Date.now();
-    if (!forceRefresh && memoryUnidades && now - lastUnidadesFetch < CACHE_TTL_MS) {
+    // Cache em memória de 30 min: unidades mudam raramente (o botão Atualizar força a releitura)
+    if (!forceRefresh && memoryUnidades && Date.now() - lastUnidadesFetch < CACHE_TTL_CADASTROS_MS) {
       return memoryUnidades;
     }
+    // Várias telas pedindo ao mesmo tempo: uma única requisição para todas
+    if (unidadesEmAndamento && !forceRefresh) return unidadesEmAndamento;
 
+    const pedido = TreasuryService.buscarUnidadesNoServidor(forceRefresh);
+    unidadesEmAndamento = pedido;
+    try {
+      return await pedido;
+    } finally {
+      if (unidadesEmAndamento === pedido) unidadesEmAndamento = null;
+    }
+  },
+
+  async buscarUnidadesNoServidor(forcar: boolean): Promise<UnidadeCadastrada[]> {
     // Só via /api/treasury (autenticada e filtrada pela igreja do usuário).
     // Sem consulta direta do navegador: a tabela unidades não filtra por igreja sozinha.
-    const apiRes = await callTreasuryApi<UnidadeCadastrada[]>('listar_unidades');
+    const apiRes = await callTreasuryApi<UnidadeCadastrada[]>('listar_unidades', forcar ? { forcar: true } : {});
     if (!apiRes.success || !Array.isArray(apiRes.data)) {
       console.warn('Não foi possível carregar as unidades cadastradas:', apiRes.error);
       return memoryUnidades || [];
@@ -593,7 +625,7 @@ export const TreasuryService = {
       inicio_em: u.inicio_em ? String(u.inicio_em).slice(0, 10) : null,
     }));
     memoryUnidades = lista;
-    lastUnidadesFetch = now;
+    lastUnidadesFetch = Date.now();
     return lista;
   },
 
@@ -857,10 +889,51 @@ export const TreasuryService = {
   },
 
   /**
+   * Lista + indicadores de um período (ano/mês) em paralelo, com cache por período.
+   * Tipo, categoria e busca são filtrados na tela, sem nova consulta.
+   */
+  async fetchFluxoPeriodo(
+    ano: number | string,
+    mes: number | string = 'todos',
+    forceRefresh = false
+  ): Promise<{ success: boolean; data?: FluxoPeriodo; error?: string; isAuthError?: boolean }> {
+    const chave = chavePeriodo(ano, mes);
+    const emCache = fluxoCache.get(chave);
+    if (!forceRefresh && emCache && Date.now() - emCache.at < CACHE_TTL_MS) {
+      return { success: true, data: emCache.data };
+    }
+
+    const [lista, ind] = await Promise.all([
+      callTreasuryApi<import('./types').FluxoCaixaItem[]>('fluxo_listar', { ano, mes }),
+      callTreasuryApi<{
+        kpis: import('./types').FluxoCaixaKPIs;
+        demonstrativo: import('./types').FluxoMensalDemonstrativo[];
+        anosDisponiveis: number[];
+        tabelaCriada?: boolean;
+      }>('fluxo_kpis', { ano, mes }),
+    ]);
+    if (!lista.success || !ind.success || !ind.data) {
+      const falha = !lista.success ? lista : ind;
+      return { success: false, error: falha.error, isAuthError: falha.authError };
+    }
+
+    const data: FluxoPeriodo = {
+      lista: Array.isArray(lista.data) ? lista.data : [],
+      kpis: ind.data.kpis,
+      demonstrativo: ind.data.demonstrativo || [],
+      anosDisponiveis: ind.data.anosDisponiveis || [Number(ano) || new Date().getFullYear()],
+      tabelaCriada: (lista as any).tabelaCriada !== false && ind.data.tabelaCriada !== false,
+    };
+    fluxoCache.set(chave, { data, at: Date.now() });
+    return { success: true, data };
+  },
+
+  /**
    * Cadastra novo lançamento no fluxo de caixa
    */
   async criarFluxoCaixa(payload: import('./types').FluxoCaixaPayload): Promise<{ success: boolean; data?: any; error?: string }> {
     const res = await callTreasuryApi('fluxo_criar', payload);
+    if (res.success) invalidarFluxo();
     return { success: Boolean(res.success), data: res.data, error: res.error };
   },
 
@@ -869,6 +942,7 @@ export const TreasuryService = {
    */
   async atualizarFluxoCaixa(id: string, payload: Partial<import('./types').FluxoCaixaPayload>): Promise<{ success: boolean; data?: any; error?: string }> {
     const res = await callTreasuryApi('fluxo_atualizar', { ID: id, ...payload });
+    if (res.success) invalidarFluxo();
     return { success: Boolean(res.success), data: res.data, error: res.error };
   },
 
@@ -877,15 +951,20 @@ export const TreasuryService = {
    */
   async excluirFluxoCaixa(id: string): Promise<{ success: boolean; error?: string }> {
     const res = await callTreasuryApi('fluxo_excluir', { ID: id });
+    if (res.success) invalidarFluxo();
     return { success: Boolean(res.success), error: res.error };
   },
 
   /**
    * Obtém categorias disponíveis para fluxo de caixa
    */
-  async fetchCategoriasFluxo(): Promise<{ success: boolean; data: string[]; error?: string }> {
+  async fetchCategoriasFluxo(forceRefresh = false): Promise<{ success: boolean; data: string[]; error?: string }> {
+    if (!forceRefresh && fluxoCategoriasCache && Date.now() - fluxoCategoriasCache.at < CACHE_TTL_CADASTROS_MS) {
+      return { success: true, data: fluxoCategoriasCache.data };
+    }
     const res = await callTreasuryApi<string[]>('fluxo_categorias');
     if (res.success && Array.isArray(res.data)) {
+      fluxoCategoriasCache = { data: res.data, at: Date.now() };
       return { success: true, data: res.data };
     }
     return {

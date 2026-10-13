@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   TrendingUp,
   TrendingDown,
@@ -36,6 +36,8 @@ interface FluxoCaixaViewProps {
   anosBase?: number[];
   onRefresh?: () => void;
   isRefreshing?: boolean;
+  /** Incrementado a cada clique em "Atualizar": força UMA nova leitura */
+  refreshToken?: number;
   onToggleMobileMenu?: () => void;
   onShowToast?: (msg: string) => void;
   usuarioLogado?: MembroItem | null;
@@ -87,6 +89,7 @@ export const FluxoCaixaView: React.FC<FluxoCaixaViewProps> = ({
   anosBase = [],
   onRefresh,
   isRefreshing = false,
+  refreshToken = 0,
   onToggleMobileMenu,
   onShowToast,
   usuarioLogado,
@@ -98,7 +101,31 @@ export const FluxoCaixaView: React.FC<FluxoCaixaViewProps> = ({
   const [buscaTexto, setBuscaTexto] = useState<string>('');
 
   // Estados de dados (SEM DADOS FICTÍCIOS)
-  const [movimentacoes, setMovimentacoes] = useState<FluxoCaixaItem[]>([]);
+  // Lançamentos do período (ano/mês) vindos do servidor
+  const [movimentacoesPeriodo, setMovimentacoes] = useState<FluxoCaixaItem[]>([]);
+  // Tipo, categoria e busca: filtrados aqui, sem nova consulta (antes cada tecla da busca
+  // disparava 3 requisições)
+  const movimentacoes = useMemo(() => {
+    const busca = buscaTexto.trim().toLowerCase();
+    const tipo = tipoFiltro.toLowerCase();
+    return movimentacoesPeriodo.filter((item) => {
+      const tipoItem = String(item.TipoFluxo || '').toLowerCase();
+      if (tipo !== 'todos') {
+        if (tipo.includes('entrada') && !tipoItem.includes('entrada')) return false;
+        if ((tipo.includes('saída') || tipo.includes('saida')) && !/sa.da/.test(tipoItem)) return false;
+      }
+      if (categoriaFiltro !== 'todos' && categoriaFiltro !== 'todas as categorias' && item.CategoriaFluxo !== categoriaFiltro) {
+        return false;
+      }
+      if (busca) {
+        const obs = String(item.ObservacoesFluxo || '').toLowerCase();
+        const cat = String(item.CategoriaFluxo || '').toLowerCase();
+        const idStr = String(item.ID || item.id || '').toLowerCase();
+        if (!obs.includes(busca) && !cat.includes(busca) && !idStr.includes(busca)) return false;
+      }
+      return true;
+    });
+  }, [movimentacoesPeriodo, tipoFiltro, categoriaFiltro, buscaTexto]);
   const [kpis, setKpis] = useState<FluxoCaixaKPIs>({
     saldoAtual: 0,
     entradasMes: 0,
@@ -132,109 +159,52 @@ export const FluxoCaixaView: React.FC<FluxoCaixaViewProps> = ({
   const [formObservacoes, setFormObservacoes] = useState<string>('');
   const [formErro, setFormErro] = useState<string | null>(null);
 
-  // Carregamento de dados reais do backend (usado em ações manuais como salvar ou atualizar)
-  const carregarDadosFluxo = useCallback(async () => {
-    if (!ativa) return;
-    setCarregando(true);
-    try {
-      const [resLista, resKPIs, resCats] = await Promise.all([
-        TreasuryService.fetchFluxoCaixa({
-          ano: anoSelecionado,
-          mes: mesSelecionado,
-          tipo: tipoFiltro,
-          categoria: categoriaFiltro,
-          busca: buscaTexto,
-        }),
-        TreasuryService.fetchFluxoKPIs(anoSelecionado, mesSelecionado),
-        TreasuryService.fetchCategoriasFluxo(),
-      ]);
+  // Aviso numa ref: o efeito de carregamento não roda de novo só porque a página re-renderizou
+  const onShowToastRef = useRef(onShowToast);
+  useEffect(() => {
+    onShowToastRef.current = onShowToast;
+  }, [onShowToast]);
 
-      if (resLista.success) {
-        setMovimentacoes(resLista.data || []);
-        if (resLista.tabelaCriada !== undefined) {
-          setTabelaCriada(resLista.tabelaCriada);
-        }
-      } else {
-        if (resLista.aviso && resLista.aviso.includes('não encontrada')) {
-          setTabelaCriada(false);
-        }
-        setMovimentacoes([]);
-      }
+  // Releitura pedida pela própria tela (depois de salvar/excluir: o serviço já descartou o cache)
+  const [versaoDados, setVersaoDados] = useState<number>(0);
+  const carregarDadosFluxo = useCallback(() => {
+    setVersaoDados((n) => n + 1);
+  }, []);
 
-      if (resKPIs.success && resKPIs.kpis) {
-        setKpis(resKPIs.kpis);
-        setDemonstrativo(resKPIs.demonstrativo || []);
-        if (resKPIs.anosDisponiveis && resKPIs.anosDisponiveis.length > 0) {
-          setAnosDisponiveis(resKPIs.anosDisponiveis);
-        }
-        if (resKPIs.tabelaCriada !== undefined) {
-          setTabelaCriada(resKPIs.tabelaCriada);
-        }
-      }
-
-      if (resCats.success && resCats.data && resCats.data.length > 0) {
-        const unicas = Array.from(new Set([...CATEGORIAS_PADRAO, ...resCats.data])).sort();
-        setCategoriasDisponiveis(unicas);
-      }
-    } catch (err: any) {
-      console.warn('Erro ao carregar dados de fluxo de caixa:', err);
-      if (onShowToast) onShowToast('Erro ao consultar movimentações financeiras.');
-    } finally {
-      setCarregando(false);
-    }
-  }, [ativa, anoSelecionado, mesSelecionado, tipoFiltro, categoriaFiltro, buscaTexto, onShowToast]);
-
-  // Sincronização inicial e quando filtros mudarem
+  // Lista + indicadores: UMA leitura por período (ano/mês), com cache no serviço.
+  // Trocar tipo, categoria ou busca não consulta o banco. "Atualizar" força uma leitura por clique.
+  const refreshAtendidoRef = useRef(refreshToken);
   useEffect(() => {
     if (!ativa) return;
     let cancel = false;
+    const forcar = refreshToken !== refreshAtendidoRef.current;
+    setCarregando(true);
     (async () => {
       try {
-        const [resLista, resKPIs, resCats] = await Promise.all([
-          TreasuryService.fetchFluxoCaixa({
-            ano: anoSelecionado,
-            mes: mesSelecionado,
-            tipo: tipoFiltro,
-            categoria: categoriaFiltro,
-            busca: buscaTexto,
-          }),
-          TreasuryService.fetchFluxoKPIs(anoSelecionado, mesSelecionado),
-          TreasuryService.fetchCategoriasFluxo(),
-        ]);
-
+        const res = await TreasuryService.fetchFluxoPeriodo(anoSelecionado, mesSelecionado, forcar);
         if (cancel) return;
-
-        if (resLista.success) {
-          setMovimentacoes(resLista.data || []);
-          if (resLista.tabelaCriada !== undefined) {
-            setTabelaCriada(resLista.tabelaCriada);
-          }
-        } else {
-          if (resLista.aviso && resLista.aviso.includes('não encontrada')) {
-            setTabelaCriada(false);
-          }
+        if (!res.success || !res.data) {
           setMovimentacoes([]);
-        }
-
-        if (resKPIs.success && resKPIs.kpis) {
-          setKpis(resKPIs.kpis);
-          setDemonstrativo(resKPIs.demonstrativo || []);
-          if (resKPIs.anosDisponiveis && resKPIs.anosDisponiveis.length > 0) {
-            setAnosDisponiveis(resKPIs.anosDisponiveis);
+          if (onShowToastRef.current) {
+            onShowToastRef.current(
+              res.isAuthError
+                ? 'Sessão expirada ou sem permissão de tesouraria. Faça login novamente.'
+                : res.error || 'Erro ao consultar movimentações financeiras.'
+            );
           }
-          if (resKPIs.tabelaCriada !== undefined) {
-            setTabelaCriada(resKPIs.tabelaCriada);
-          }
+          return;
         }
-
-        if (resCats.success && resCats.data && resCats.data.length > 0) {
-          const unicas = Array.from(new Set([...CATEGORIAS_PADRAO, ...resCats.data])).sort();
-          setCategoriasDisponiveis(unicas);
-        }
+        refreshAtendidoRef.current = refreshToken;
+        const d = res.data;
+        setMovimentacoes(d.lista);
+        setTabelaCriada(d.tabelaCriada);
+        setKpis(d.kpis);
+        setDemonstrativo(d.demonstrativo);
+        if (d.anosDisponiveis.length > 0) setAnosDisponiveis(d.anosDisponiveis);
       } catch (err: any) {
         if (!cancel) {
           console.warn('Erro ao carregar dados de fluxo de caixa:', err);
-          if (onShowToast) onShowToast('Erro ao consultar movimentações financeiras.');
+          if (onShowToastRef.current) onShowToastRef.current('Erro ao consultar movimentações financeiras.');
         }
       } finally {
         if (!cancel) setCarregando(false);
@@ -243,7 +213,20 @@ export const FluxoCaixaView: React.FC<FluxoCaixaViewProps> = ({
     return () => {
       cancel = true;
     };
-  }, [ativa, anoSelecionado, mesSelecionado, tipoFiltro, categoriaFiltro, buscaTexto, onShowToast]);
+  }, [ativa, anoSelecionado, mesSelecionado, refreshToken, versaoDados]);
+
+  // Categorias: uma leitura por sessão (cache de 30 min no serviço), não a cada filtro
+  useEffect(() => {
+    if (!ativa) return;
+    let cancel = false;
+    TreasuryService.fetchCategoriasFluxo().then((resCats) => {
+      if (cancel || !resCats.success || !resCats.data?.length) return;
+      setCategoriasDisponiveis(Array.from(new Set([...CATEGORIAS_PADRAO, ...resCats.data])).sort());
+    });
+    return () => {
+      cancel = true;
+    };
+  }, [ativa, versaoDados, refreshToken]);
 
   // Reset do formulário
   const resetForm = () => {
@@ -463,8 +446,9 @@ export const FluxoCaixaView: React.FC<FluxoCaixaViewProps> = ({
           {/* Botão Sincronizar */}
           <button
             onClick={() => {
-              carregarDadosFluxo();
+              // "Atualizar" geral já força esta tela (refreshToken); sem ele, recarrega só aqui
               if (onRefresh) onRefresh();
+              else carregarDadosFluxo();
             }}
             disabled={carregando || isRefreshing}
             className="p-2 rounded-lg bg-[#252a40] hover:bg-[#313754] text-slate-300 hover:text-white border border-[#394164] transition-colors cursor-pointer"

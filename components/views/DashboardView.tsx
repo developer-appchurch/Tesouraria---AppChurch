@@ -16,7 +16,10 @@ interface DashboardViewProps {
   onRefresh: () => void;
   onToggleMobileMenu?: () => void;
   isRefreshing?: boolean;
+  /** Incrementado a cada clique em "Atualizar": força UMA nova leitura */
+  refreshToken?: number;
   onShowToast?: (msg: string) => void;
+  /** Unidades carregadas uma vez pela página (o Dashboard não busca por conta própria) */
   unidades?: UnidadeCadastrada[];
   usuarioLogado?: MembroItem | null;
 }
@@ -120,11 +123,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onRefresh,
   onToggleMobileMenu,
   isRefreshing = false,
+  refreshToken = 0,
   unidades,
   usuarioLogado,
   anosBase = [],
 }) => {
-  const [unidadesCarregadas, setUnidadesCarregadas] = useState<UnidadeCadastrada[]>([]);
 
   // Totais por (ano, mês, setor) já somados no servidor (~100 linhas/ano em vez de milhares)
   const [agregados, setAgregados] = useState<AgregadoDashboard[]>([]);
@@ -134,39 +137,29 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       ? 'todos'
       : Number(anoSelecionado) || new Date().getFullYear();
 
+  // Uma leitura por ano (cache de 3 min no serviço). "Atualizar" força UMA nova leitura
+  // por clique; com a tela escondida, a atualização acontece quando ela for aberta.
+  const refreshAtendidoRef = useRef(refreshToken);
   useEffect(() => {
     if (!ativa) return;
     let cancel = false;
+    const forcar = refreshToken !== refreshAtendidoRef.current;
     (async () => {
-      const res = await TreasuryService.fetchDashboardResumo(anoConsulta, isRefreshing);
+      const res = await TreasuryService.fetchDashboardResumo(anoConsulta, forcar);
       if (cancel) return;
       setErroAgregados(res.error || null);
-      if (!res.error) setAgregados(res.data);
+      if (!res.error) {
+        setAgregados(res.data);
+        refreshAtendidoRef.current = refreshToken;
+      }
     })();
     return () => {
       cancel = true;
     };
-  }, [ativa, anoConsulta, isRefreshing]);
+  }, [ativa, anoConsulta, refreshToken]);
 
-  useEffect(() => {
-    let cancel = false;
-    const carregar = async () => {
-      try {
-        const data = await TreasuryService.fetchUnidadesCadastradas();
-        if (!cancel && data) {
-          setUnidadesCarregadas(data);
-        }
-      } catch (err) {
-        console.warn('Erro ao carregar unidades no Dashboard:', err);
-      }
-    };
-    carregar();
-    return () => {
-      cancel = true;
-    };
-  }, [isRefreshing]);
-
-  const unidadesCadastradas = unidades && unidades.length > 0 ? unidades : unidadesCarregadas;
+  // Unidades: vêm da página (carregadas uma vez por sessão, sem pedido duplicado aqui)
+  const unidadesCadastradas = unidades || [];
 
   const [mesSelecionado, setMesSelecionado] = useState<string>(() => {
     const hoje = new Date();

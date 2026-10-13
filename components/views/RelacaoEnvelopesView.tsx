@@ -13,12 +13,7 @@ import {
 } from 'lucide-react';
 import { LancamentoTesouraria, UnidadeCadastrada } from '@/lib/types';
 import { formatBRL, formatDateBR } from '@/lib/utils';
-import { TreasuryService, SEM_SETOR, registrarLimpezaDeCache } from '@/lib/treasury-service';
-
-let globalUnidadesCache: UnidadeCadastrada[] | null = null;
-registrarLimpezaDeCache(() => {
-  globalUnidadesCache = null;
-});
+import { TreasuryService, SEM_SETOR } from '@/lib/treasury-service';
 
 interface RelacaoEnvelopesViewProps {
   lancamentos: LancamentoTesouraria[];
@@ -30,6 +25,8 @@ interface RelacaoEnvelopesViewProps {
   onSelectSetor?: (setor: string) => void;
   onRefresh: () => void;
   onShowToast: (msg: string) => void;
+  /** Unidades carregadas uma vez pela página (esta tela não busca por conta própria) */
+  unidades?: UnidadeCadastrada[];
 }
 
 export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
@@ -39,34 +36,14 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
   setorSelecionado = '',
   onRefresh,
   onShowToast,
+  unidades,
 }) => {
   const [modalDuplicadosAberto, setModalDuplicadosAberto] = useState<boolean>(false);
   const [relatorioParaExcluir, setRelatorioParaExcluir] = useState<LancamentoTesouraria | null>(null);
   const [isExcluindo, setIsExcluindo] = useState<boolean>(false);
   const [isSkeletonLoading, setIsSkeletonLoading] = useState<boolean>(true);
-  const [unidadesCadastradas, setUnidadesCadastradas] = useState<UnidadeCadastrada[]>(() => globalUnidadesCache || []);
-
-  // Busca as unidades reais da igreja (id, nome, pai_id, ativo) uma vez ao abrir a tela.
-  // O serviço guarda em cache; não depende de onRefresh para não repetir a busca a cada renderização.
-  useEffect(() => {
-    let isCancelled = false;
-    const carregar = async () => {
-      try {
-        const data = await TreasuryService.fetchUnidadesCadastradas();
-        // Sempre substitui (mesmo vazio): nunca manter unidades de outra sessão
-        if (!isCancelled && data) {
-          globalUnidadesCache = data;
-          setUnidadesCadastradas(data);
-        }
-      } catch (err) {
-        console.warn('Erro ao carregar unidades cadastradas:', err);
-      }
-    };
-    carregar();
-    return () => {
-      isCancelled = true;
-    };
-  }, []);
+  // Unidades da igreja: vêm da página (uma leitura por sessão, compartilhada com o Dashboard)
+  const unidadesCadastradas = useMemo(() => unidades || [], [unidades]);
 
   // Efeito de Skeleton suave na inicialização
   useEffect(() => {
