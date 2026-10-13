@@ -60,6 +60,11 @@ registrarLimpezaDeCache(() => {
   anoAtualDaTela = null;
 });
 
+/** Cache do último ano mostrado nesta tela (usado só para o estado inicial ao montar). */
+function lerCacheInicial(): ValidarCache | undefined {
+  return anoAtualDaTela ? validarCachePorAno.get(anoAtualDaTela) : undefined;
+}
+
 /** Mês (1-12) de um relatório: o informado pelo servidor ou o da data (YYYY-MM-DD). */
 function mesDoRelatorio(r: RelatorioDetalhadoRPC): number {
   if (typeof r.mes === 'number' && r.mes >= 1) return r.mes;
@@ -123,10 +128,9 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
 
   // Dados carregados das RPCs do Supabase - inicializa do cache se já existir
   // Setores da igreja (nomes) vindos do servidor; os contadores são calculados da lista abaixo
-  const cacheInicial = anoAtualDaTela ? validarCachePorAno.get(anoAtualDaTela) : undefined;
-  const [setoresServidor, setSetoresServidor] = useState<SetorPendenciaRPC[]>(() => cacheInicial?.setores || []);
+  const [setoresServidor, setSetoresServidor] = useState<SetorPendenciaRPC[]>(() => lerCacheInicial()?.setores || []);
   // Relatórios do ano inteiro (setRelatorios sempre altera esta lista)
-  const [relatoriosAno, setRelatorios] = useState<RelatorioDetalhadoRPC[]>(() => cacheInicial?.relatorios || []);
+  const [relatoriosAno, setRelatorios] = useState<RelatorioDetalhadoRPC[]>(() => lerCacheInicial()?.relatorios || []);
   // Relatórios do mês escolhido: filtrados aqui, trocar de mês não consulta o banco
   const relatorios = useMemo(
     () =>
@@ -169,7 +173,7 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
   }, [relatoriosAno]);
 
   // Estados de carregamento controlados para evitar qualquer piscar de tela
-  const [isCarregandoGeral, setIsCarregandoGeral] = useState<boolean>(() => !cacheInicial);
+  const [isCarregandoGeral, setIsCarregandoGeral] = useState<boolean>(() => !lerCacheInicial());
   const [isAtualizandoTabela, setIsAtualizandoTabela] = useState<boolean>(false);
   const [erroCarregamento, setErroCarregamento] = useState<string | null>(null);
   // Recarregamento manual ("Tentar de novo") sem depender do botão global de atualizar
@@ -274,18 +278,19 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
     const forcar = refreshToken !== refreshAtendidoRef.current;
     const emCache = validarCachePorAno.get(chaveAno);
 
-    if (!forcar && emCache && Date.now() - emCache.at < VALIDAR_CACHE_TTL_MS) {
-      anoAtualDaTela = chaveAno;
-      setSetoresServidor(emCache.setores);
-      setRelatorios(emCache.relatorios);
-      setIsCarregandoGeral(false);
-      return;
-    }
+    // Estados atualizados dentro da função assíncrona (regra react-hooks/set-state-in-effect)
+    const carregar = async () => {
+      if (!forcar && emCache && Date.now() - emCache.at < VALIDAR_CACHE_TTL_MS) {
+        anoAtualDaTela = chaveAno;
+        setSetoresServidor(emCache.setores);
+        setRelatorios(emCache.relatorios);
+        setIsCarregandoGeral(false);
+        return;
+      }
 
-    if (emCache || relatoriosAno.length > 0) setIsAtualizandoTabela(true);
-    else setIsCarregandoGeral(true);
+      if (emCache || relatoriosAno.length > 0) setIsAtualizandoTabela(true);
+      else setIsCarregandoGeral(true);
 
-    (async () => {
       try {
         // UMA chamada por ano: setores e relatórios vêm juntos do servidor
         const res = await TreasuryService.fetchPainelValidacao(pAno, null);
@@ -320,7 +325,8 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
           setIsAtualizandoTabela(false);
         }
       }
-    })();
+    };
+    carregar();
 
     return () => {
       isCancelled = true;

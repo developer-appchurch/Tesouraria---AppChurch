@@ -159,7 +159,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   }, [ativa, anoConsulta, refreshToken]);
 
   // Unidades: vêm da página (carregadas uma vez por sessão, sem pedido duplicado aqui)
-  const unidadesCadastradas = unidades || [];
+  const unidadesCadastradas = useMemo(() => unidades || [], [unidades]);
 
   const [mesSelecionado, setMesSelecionado] = useState<string>(() => {
     const hoje = new Date();

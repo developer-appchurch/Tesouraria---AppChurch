@@ -178,8 +178,9 @@ export const FluxoCaixaView: React.FC<FluxoCaixaViewProps> = ({
     if (!ativa) return;
     let cancel = false;
     const forcar = refreshToken !== refreshAtendidoRef.current;
-    setCarregando(true);
-    (async () => {
+    // Estados atualizados dentro da função assíncrona (regra react-hooks/set-state-in-effect)
+    const carregar = async () => {
+      setCarregando(true);
       try {
         const res = await TreasuryService.fetchFluxoPeriodo(anoSelecionado, mesSelecionado, forcar);
         if (cancel) return;
@@ -209,7 +210,8 @@ export const FluxoCaixaView: React.FC<FluxoCaixaViewProps> = ({
       } finally {
         if (!cancel) setCarregando(false);
       }
-    })();
+    };
+    carregar();
     return () => {
       cancel = true;
     };
