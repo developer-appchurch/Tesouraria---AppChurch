@@ -65,6 +65,18 @@ function lerCacheInicial(): ValidarCache | undefined {
   return anoAtualDaTela ? validarCachePorAno.get(anoAtualDaTela) : undefined;
 }
 
+/**
+ * Data da validação (dd/mm/aaaa) no horário de Brasília. Registros importados só com a
+ * data vêm à meia-noite UTC: nesses casos usa a própria data, para não cair no dia anterior.
+ */
+function formatarDataValidacao(valor?: string | null): string | null {
+  if (!valor) return null;
+  const d = new Date(valor);
+  if (isNaN(d.getTime())) return null;
+  const soData = d.getUTCHours() === 0 && d.getUTCMinutes() === 0 && d.getUTCSeconds() === 0 && d.getUTCMilliseconds() === 0;
+  return d.toLocaleDateString('pt-BR', { timeZone: soData ? 'UTC' : 'America/Sao_Paulo' });
+}
+
 /** Mês (1-12) de um relatório: o informado pelo servidor ou o da data (YYYY-MM-DD). */
 function mesDoRelatorio(r: RelatorioDetalhadoRPC): number {
   if (typeof r.mes === 'number' && r.mes >= 1) return r.mes;
@@ -785,6 +797,7 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
                     (item.tesoureiro_id && String(item.tesoureiro_id) === String(usuarioLogado?.id)
                       ? usuarioLogado?.nome
                       : 'Tesoureiro');
+                  const dataValidacao = formatarDataValidacao(item.data_recebimento);
 
                   return (
                     <tr
@@ -802,6 +815,7 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
                           <div className="text-[11px] font-normal text-slate-600 flex flex-wrap items-center gap-1.5 mt-0.5">
                             <span className="font-bold bg-emerald-100 text-emerald-800 border border-emerald-300/70 px-2 py-0.2 rounded text-[10px] inline-flex items-center gap-1">
                               Validado por {nomeValidadorFinal}
+                              {dataValidacao ? ` - ${dataValidacao}` : ''}
                             </span>
                           </div>
                         )}
