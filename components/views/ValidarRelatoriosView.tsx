@@ -189,6 +189,30 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
   // Seleção para ações em lote
   const [selecionados, setSelecionados] = useState<Set<string>>(new Set());
 
+  // Alterações feitas nesta tela (validar, desfazer, editar valores). Uma leitura do
+  // servidor que começou ANTES da alteração ser gravada traz o estado antigo; sem isto,
+  // ao chegar ela sobrescrevia a tela e o relatório recém-validado voltava a "pendente".
+  const alteracoesLocaisRef = useRef(
+    new Map<string, { patch: Partial<RelatorioDetalhadoRPC>; concluidaEm: number | null }>()
+  );
+  const registrarAlteracao = (id: string, patch: Partial<RelatorioDetalhadoRPC>, concluidaEm: number | null) => {
+    const atual = alteracoesLocaisRef.current.get(id);
+    alteracoesLocaisRef.current.set(id, { patch: { ...(atual?.patch || {}), ...patch }, concluidaEm });
+  };
+  /** Reaplica sobre uma leitura do servidor as alterações que ela pode não conter. */
+  const reaplicarAlteracoes = (lista: RelatorioDetalhadoRPC[], inicioLeitura: number) => {
+    const mapa = alteracoesLocaisRef.current;
+    // Gravadas antes de a leitura começar: o servidor já devolve o valor certo
+    mapa.forEach((alt, id) => {
+      if (alt.concluidaEm !== null && alt.concluidaEm < inicioLeitura) mapa.delete(id);
+    });
+    if (mapa.size === 0) return lista;
+    return lista.map((r) => {
+      const alt = mapa.get(r.id);
+      return alt ? { ...r, ...alt.patch } : r;
+    });
+  };
+
   // Modal de edição de relatório
   const [modalEditarItem, setModalEditarItem] = useState<RelatorioDetalhadoRPC | null>(null);
   const [editCelula, setEditCelula] = useState<string>('');
@@ -292,6 +316,7 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
       else setIsCarregandoGeral(true);
 
       try {
+        const inicioLeitura = Date.now();
         // UMA chamada por ano: setores e relatórios vêm juntos do servidor
         const res = await TreasuryService.fetchPainelValidacao(pAno, null);
         if (isCancelled) return;
@@ -306,7 +331,9 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
           return;
         }
 
-        const { setores: newSetores, relatorios: newRelatorios } = res.data;
+        const { setores: newSetores } = res.data;
+        // Validações/edições feitas enquanto esta leitura estava em andamento não se perdem
+        const newRelatorios = reaplicarAlteracoes(res.data.relatorios, inicioLeitura);
         validarCachePorAno.set(chaveAno, { setores: newSetores, relatorios: newRelatorios, at: Date.now() });
         anoAtualDaTela = chaveAno;
         refreshAtendidoRef.current = refreshToken; // este clique em "Atualizar" foi atendido
@@ -397,18 +424,15 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
     const idsSet = new Set(ids);
     const anteriores = new Map(relatorios.filter((r) => idsSet.has(r.id)).map((r) => [r.id, r]));
     const agora = new Date().toISOString();
+    const patch: Partial<RelatorioDetalhadoRPC> = {
+      tesouraria_recebido: validar,
+      data_recebimento: validar ? agora : null,
+      nome_tesoureiro: validar ? usuarioLogado?.nome || 'Tesoureiro' : null,
+    };
+    ids.forEach((id) => registrarAlteracao(id, patch, null)); // em andamento
 
     setRelatorios((prev) =>
-      prev.map((r) =>
-        idsSet.has(r.id)
-          ? {
-              ...r,
-              tesouraria_recebido: validar,
-              data_recebimento: validar ? agora : null,
-              nome_tesoureiro: validar ? usuarioLogado?.nome || 'Tesoureiro' : null,
-            }
-          : r
-      )
+      prev.map((r) => (idsSet.has(r.id) ? { ...r, ...patch } : r))
     );
     if (validar) {
       setSelecionados((prev) => {
@@ -429,9 +453,12 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
     }
 
     if (erro) {
+      ids.forEach((id) => alteracoesLocaisRef.current.delete(id));
       setRelatorios((prev) => prev.map((r) => anteriores.get(r.id) ?? r));
       onShowToast(`${mensagens.erro}: ${erro}`);
     } else {
+      const concluidaEm = Date.now();
+      ids.forEach((id) => registrarAlteracao(id, {}, concluidaEm));
       onShowToast(typeof mensagens.sucesso === 'function' ? mensagens.sucesso(count) : mensagens.sucesso);
     }
   };
@@ -507,6 +534,7 @@ export const ValidarRelatoriosView: React.FC<ValidarRelatoriosViewProps> = ({
         return;
       }
 
+      registrarAlteracao(modalEditarItem.id, { valor_pix: editPix, valor_especie: editEspecie }, Date.now());
       setRelatorios((prev) =>
         prev.map((r) =>
           r.id === modalEditarItem.id
