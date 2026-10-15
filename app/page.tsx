@@ -308,6 +308,9 @@ export default function TreasuryApp() {
             setoresDisponiveis={setoresDisponiveis}
             anosBase={anosComRelatorios}
             onShowToast={showToast}
+            unidades={unidadesCadastradas}
+            igrejaNome={igrejaNome}
+            usuarioNome={usuarioLogado?.nome || null}
           />
         )}
 
@@ -350,8 +353,6 @@ export default function TreasuryApp() {
               onRefresh={handleRefresh}
               onShowToast={showToast}
               unidades={unidadesCadastradas}
-              igrejaNome={igrejaNome}
-              usuarioNome={usuarioLogado?.nome || null}
             />
           </div>
 

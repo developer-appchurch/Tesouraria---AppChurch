@@ -14,10 +14,12 @@ import {
 import { LancamentoTesouraria, UnidadeCadastrada } from '@/lib/types';
 import { formatBRL, formatDateBR } from '@/lib/utils';
 import { TreasuryService, SEM_SETOR } from '@/lib/treasury-service';
-import { BotaoExportar } from '@/components/BotaoExportar';
-import type { DadosEnvelopes } from '@/lib/exportar';
-
-const NOMES_MESES = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+import {
+  celulasDoSetor as celulasDoSetorFn,
+  semanasDoMes,
+  indexarLancamentos,
+  valoresDaCelula,
+} from '@/lib/envelopes';
 
 interface RelacaoEnvelopesViewProps {
   lancamentos: LancamentoTesouraria[];
@@ -31,9 +33,6 @@ interface RelacaoEnvelopesViewProps {
   onShowToast: (msg: string) => void;
   /** Unidades carregadas uma vez pela página (esta tela não busca por conta própria) */
   unidades?: UnidadeCadastrada[];
-  /** Cabeçalho dos arquivos exportados */
-  igrejaNome?: string | null;
-  usuarioNome?: string | null;
 }
 
 export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
@@ -44,8 +43,6 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
   onRefresh,
   onShowToast,
   unidades,
-  igrejaNome = null,
-  usuarioNome = null,
 }) => {
   const [modalDuplicadosAberto, setModalDuplicadosAberto] = useState<boolean>(false);
   const [relatorioParaExcluir, setRelatorioParaExcluir] = useState<LancamentoTesouraria | null>(null);
@@ -76,273 +73,26 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
       ? Number(mesSelecionado)
       : null;
 
-  // 1. Extrair APENAS as unidades cujo pai_id(setor) seja o setor selecionado e ativo = true
-  const celulasDoSetor = useMemo(() => {
-    const setorAlvo = (setorSelecionado || '').trim().toLowerCase();
+  // 1-4. Células do setor, semanas do mês e valores: mesma conta usada na exportação (lib/envelopes)
+  const celulasDoSetor = useMemo(
+    () => celulasDoSetorFn(unidadesCadastradas, lancamentos, setorSelecionado),
+    [unidadesCadastradas, lancamentos, setorSelecionado]
+  );
 
-    // Mapeamento de id do setor para nome do setor
-    const mapaSetoresPorId = new Map<string, string>();
-    unidadesCadastradas.forEach((u) => {
-      mapaSetoresPorId.set(u.id, u.nome);
-    });
-
-    // Encontra a unidade que representa o setor selecionado (pelo nome)
-    const setorUnit = unidadesCadastradas.find(
-      (u) => u.nome.trim().toLowerCase() === setorAlvo
-    );
-
-    // Filtra as unidades do banco:
-    // Deve ter como pai_id o ID do setor selecionado na parte de cima, e com ativo === true
-    let unidadesFiltradas: UnidadeCadastrada[] = [];
-
-    if (isTodosSetores) {
-      // Se "Todos os Setores", exibe todas as células ativas que possuem um pai_id (setor)
-      unidadesFiltradas = unidadesCadastradas.filter(
-        (u) => Boolean(u.pai_id) && u.ativo === true
-      );
-    } else if (setorUnit) {
-      unidadesFiltradas = unidadesCadastradas.filter(
-        (u) => u.pai_id === setorUnit.id && u.ativo === true
-      );
-    } else {
-      // Fallback: se setorUnit não for encontrado pelo nome exato, verifica se algum pai_id tem o nome do setor
-      unidadesFiltradas = unidadesCadastradas.filter((u) => {
-        if (!u.pai_id || u.ativo !== true) return false;
-        const nomePai = mapaSetoresPorId.get(u.pai_id);
-        return Boolean(nomePai && nomePai.trim().toLowerCase() === setorAlvo);
-      });
-    }
-
-    // Mapeia líderes dos lançamentos para preencher o nome do líder de cada unidade
-    const lideresPorUnidade = new Map<string, string>();
-    const lideresPorNome = new Map<string, string>();
-    lancamentos.forEach((l) => {
-      const lid = l.LiderCelula || l.liderCelula;
-      if (lid && lid !== '-') {
-        if (l.unidade_id) lideresPorUnidade.set(l.unidade_id, lid);
-        const cNome = (l.Célula || l.celulaNome || '').trim().toLowerCase();
-        if (cNome) lideresPorNome.set(cNome, lid);
-      }
-    });
-
-    return unidadesFiltradas
-      .map((u) => {
-        const setorNome = (u.pai_id && mapaSetoresPorId.get(u.pai_id)) || setorUnit?.nome || setorSelecionado || SEM_SETOR;
-        const lider =
-          u.lider_nome ||
-          (u.lideres && u.lideres.length > 0 ? u.lideres.join(', ') : null) ||
-          lideresPorUnidade.get(u.id) ||
-          lideresPorNome.get(u.nome.trim().toLowerCase()) ||
-          '-';
-        return {
-          id: u.id,
-          nome: u.nome,
-          lider,
-          lideres: u.lideres || [],
-          setor: setorNome,
-          ativo: u.ativo,
-        };
-      })
-      .sort((a, b) => {
-        if (isTodosSetores) {
-          const cmpSetor = a.setor.localeCompare(b.setor);
-          if (cmpSetor !== 0) return cmpSetor;
-        }
-        return a.nome.localeCompare(b.nome);
-      });
-  }, [unidadesCadastradas, setorSelecionado, isTodosSetores, lancamentos]);
-
-  // 2. 5 semanas do mês baseadas no último sábado do mês
   const semanas = useMemo(() => {
     const ano = typeof anoSelecionado === 'number' && anoSelecionado > 2000 ? anoSelecionado : new Date().getFullYear();
     const mesNum = mesSelecionado && mesSelecionado !== 'todos' ? parseInt(mesSelecionado, 10) : new Date().getMonth() + 1;
-
-    const ultimoDiaDoMes = new Date(ano, mesNum, 0);
-    const diaSemanaUltimoDia = ultimoDiaDoMes.getDay();
-    const diasParaSubtrair = (diaSemanaUltimoDia - 6 + 7) % 7;
-    const dataUltimoSabado = new Date(ano, mesNum - 1, ultimoDiaDoMes.getDate() - diasParaSubtrair);
-
-    const getWeekNumber = (d: Date): number => {
-      const target = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
-      const dayNr = (target.getUTCDay() + 6) % 7;
-      target.setUTCDate(target.getUTCDate() - dayNr + 3);
-      const firstThursday = target.getTime();
-      target.setUTCMonth(0, 1);
-      if (target.getUTCDay() !== 4) {
-        target.setUTCMonth(0, 1 + ((4 - target.getUTCDay()) + 7) % 7);
-      }
-      return 1 + Math.ceil((firstThursday - target.getTime()) / 604800000);
-    };
-
-    const listaSemanas = [];
-    for (let step = 4; step >= 0; step--) {
-      const d = new Date(dataUltimoSabado);
-      d.setDate(d.getDate() - step * 7);
-      const diaStr = String(d.getDate()).padStart(2, '0');
-      const mesStr = String(d.getMonth() + 1).padStart(2, '0');
-      const anoStr = String(d.getFullYear());
-      const dataFormatada = `${diaStr}/${mesStr}/${anoStr}`;
-      const dataIso = `${anoStr}-${mesStr}-${diaStr}`;
-      const numSemana = getWeekNumber(d);
-      listaSemanas.push({
-        num: numSemana,
-        data: dataFormatada,
-        dataIso,
-        dataObj: d,
-      });
-    }
-    return listaSemanas;
+    return semanasDoMes(ano, mesNum);
   }, [anoSelecionado, mesSelecionado]);
 
-  // 3. MAPA DE INDEXAÇÃO O(1) PARA BUSCA ULTRA RÁPIDA DE VALORES POR CÉLULA E SEMANA
-  const lancamentosPorCelulaESemana = useMemo(() => {
-    const map = new Map<
-      string,
-      {
-        pix: number;
-        dinheiro: number;
-        total: number;
-        validadoTesouraria: boolean;
-        relatorios: LancamentoTesouraria[];
-      }
-    >();
+  const lancamentosPorCelulaESemana = useMemo(
+    () => indexarLancamentos(lancamentos, semanas, { ano: anoNumFiltro, mes: mesNumFiltro, setor: setorSelecionado }),
+    [lancamentos, semanas, anoNumFiltro, mesNumFiltro, setorSelecionado]
+  );
 
-    const setorAlvo = (setorSelecionado || '').trim().toLowerCase();
-
-    // Helper para verificar se a data está na janela de 7 dias daquela semana (terminando no sábado)
-    const isDateInWeekWindow = (dateIso: string, saturday: Date): boolean => {
-      if (!dateIso) return false;
-      try {
-        const clean = dateIso.includes('T') ? dateIso.split('T')[0] : dateIso;
-        const parts = clean.split('-');
-        if (parts.length !== 3) return false;
-        const d = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10), 12, 0, 0);
-        if (isNaN(d.getTime())) return false;
-
-        const satEnd = new Date(saturday.getFullYear(), saturday.getMonth(), saturday.getDate(), 23, 59, 59);
-        const sunStart = new Date(saturday.getFullYear(), saturday.getMonth(), saturday.getDate() - 6, 0, 0, 0);
-        return d >= sunStart && d <= satEnd;
-      } catch {
-        return false;
-      }
-    };
-
-    for (let i = 0; i < lancamentos.length; i++) {
-      const l = lancamentos[i];
-      const celNome = (l.Célula || l.celulaNome || '').trim().toLowerCase();
-      if (!celNome) continue;
-
-      let setorNome = (l.Setor || l.setor || '').trim().toLowerCase();
-      if (!setorNome) {
-        setorNome = SEM_SETOR.toLowerCase();
-      }
-
-      // Filtro de setor
-      if (!isTodosSetores && setorNome !== setorAlvo) {
-        continue;
-      }
-
-      // Filtro de ano
-      const lAno = l.ano || (l.data ? new Date(l.data).getFullYear() : null);
-      if (anoNumFiltro !== null && lAno && lAno !== anoNumFiltro) {
-        continue;
-      }
-
-      // Filtro de mês
-      const lMes = l.mes || (l.data ? new Date(l.data).getMonth() + 1 : null);
-      if (mesNumFiltro !== null && lMes && lMes !== mesNumFiltro) {
-        // Se o mês for diferente, mas a semana cair no mês selecionado, checa nas semanas
-        const semNumLanc = typeof l.semanaNumero === 'number' ? l.semanaNumero : l.NumSemana;
-        const semanaNaTela = semanas.some((s) => s.num === semNumLanc || (l.data && isDateInWeekWindow(l.data, s.dataObj)));
-        if (!semanaNaTela) continue;
-      }
-
-      const semNumLanc = typeof l.semanaNumero === 'number' ? l.semanaNumero : l.NumSemana;
-
-      // Encontrar a semana correspondente na tela
-      let matchedSemana: (typeof semanas)[0] | undefined = undefined;
-      for (const sem of semanas) {
-        if (typeof semNumLanc === 'number' && semNumLanc === sem.num) {
-          matchedSemana = sem;
-          break;
-        }
-        if (l.dataBR === sem.data || l.data === sem.dataIso) {
-          matchedSemana = sem;
-          break;
-        }
-        if (l.data && isDateInWeekWindow(l.data, sem.dataObj)) {
-          matchedSemana = sem;
-          break;
-        }
-      }
-
-      if (!matchedSemana) continue;
-
-      const pix = Number(l.valorPix ?? (l.ValorOferta ?? 0));
-      const esp = Number(l.valorEspecie ?? (l.OfertaEspecie ?? 0));
-      const tot = Number(l.valorTotal ?? (l.Total ?? (pix + esp)));
-      const isValidado = l.TESOURARIA_RECEB === true;
-
-      const keysToAdd = [
-        `${celNome}___sem_${matchedSemana.num}`,
-        `${setorNome}___${celNome}___sem_${matchedSemana.num}`,
-      ];
-
-      if (l.unidade_id) {
-        keysToAdd.push(`u_${l.unidade_id}___sem_${matchedSemana.num}`);
-      }
-
-      for (const k of keysToAdd) {
-        const existing = map.get(k);
-        if (existing) {
-          existing.pix += pix;
-          existing.dinheiro += esp;
-          existing.total += tot;
-          existing.validadoTesouraria = existing.validadoTesouraria && isValidado;
-          existing.relatorios.push(l);
-        } else {
-          map.set(k, {
-            pix,
-            dinheiro: esp,
-            total: tot,
-            validadoTesouraria: isValidado,
-            relatorios: [l],
-          });
-        }
-      }
-    }
-
-    return map;
-  }, [lancamentos, semanas, anoNumFiltro, mesNumFiltro, setorSelecionado, isTodosSetores]);
-
-  // 4. Helper O(1) para obter valores da célula
   const getValores = useCallback(
-    (
-      celulaId: string,
-      celulaNome: string,
-      celulaSetor: string,
-      semInfo: { num: number; data: string; dataIso: string; dataObj: Date }
-    ) => {
-      const cNorm = celulaNome.trim().toLowerCase();
-      const sNorm = (celulaSetor || '').trim().toLowerCase();
-
-      const data =
-        (celulaId ? lancamentosPorCelulaESemana.get(`u_${celulaId}___sem_${semInfo.num}`) : undefined) ||
-        lancamentosPorCelulaESemana.get(`${sNorm}___${cNorm}___sem_${semInfo.num}`) ||
-        lancamentosPorCelulaESemana.get(`${cNorm}___sem_${semInfo.num}`);
-
-      if (!data) {
-        return { temDado: false, pix: null, dinheiro: null, validadoTesouraria: false, total: 0 };
-      }
-
-      return {
-        temDado: true,
-        pix: data.pix,
-        dinheiro: data.dinheiro,
-        total: data.total,
-        validadoTesouraria: data.validadoTesouraria,
-      };
-    },
+    (celulaId: string, celulaNome: string, celulaSetor: string, semInfo: { num: number }) =>
+      valoresDaCelula(lancamentosPorCelulaESemana, { id: celulaId, nome: celulaNome, setor: celulaSetor }, semInfo),
     [lancamentosPorCelulaESemana]
   );
 
@@ -454,41 +204,6 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
     };
   }, [lancamentos, setorSelecionado, isTodosSetores, anoNumFiltro, mesNumFiltro, semanas]);
 
-  // Exportação: exatamente o que a tabela mostra (mesmas células, semanas e cores), sem nova consulta
-  const montarDadosExportacao = (): DadosEnvelopes => {
-    const ano = typeof anoSelecionado === 'number' && anoSelecionado > 2000 ? anoSelecionado : new Date().getFullYear();
-    const mesNum = mesSelecionado && mesSelecionado !== 'todos' ? parseInt(mesSelecionado, 10) : new Date().getMonth() + 1;
-    return {
-      cab: {
-        igreja: igrejaNome,
-        titulo: 'Relação de Envelopes',
-        periodo: `${NOMES_MESES[mesNum - 1] || ''} de ${ano}`,
-        filtros: `Setor: ${isTodosSetores ? 'Todos os setores' : setorSelecionado}`,
-        geradoPor: usuarioNome,
-      },
-      semanas: semanas.map((s) => ({ num: s.num, data: s.data })),
-      linhas: celulasDoSetor.map((c) => ({
-        setor: c.setor,
-        celula: c.nome,
-        lider: c.lider,
-        semanas: semanas.map((sem) => {
-          const v = getValores(c.id, c.nome, c.setor, sem);
-          return { temDado: v.temDado, validado: v.validadoTesouraria, pix: Number(v.pix ?? 0), especie: Number(v.dinheiro ?? 0) };
-        }),
-      })),
-    };
-  };
-
-  const exportarPdf = async () => {
-    const { exportarEnvelopesPdf } = await import('@/lib/exportar');
-    await exportarEnvelopesPdf(montarDadosExportacao());
-  };
-
-  const exportarExcel = async () => {
-    const { exportarEnvelopesExcel } = await import('@/lib/exportar');
-    await exportarEnvelopesExcel(montarDadosExportacao());
-  };
-
   const handleConfirmarExclusao = async () => {
     if (!relatorioParaExcluir) return;
     setIsExcluindo(true);
@@ -550,15 +265,6 @@ export const RelacaoEnvelopesView: React.FC<RelacaoEnvelopesViewProps> = ({
         </div>
       ) : (
         <>
-          <div className="flex justify-end -mb-1">
-            <BotaoExportar
-              onPdf={exportarPdf}
-              onExcel={exportarExcel}
-              onErro={onShowToast}
-              desabilitado={celulasDoSetor.length === 0}
-            />
-          </div>
-
           {/* 1. Top SKU Cards */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5 sm:gap-4">
             {/* Card 1: Envelopes Validados */}

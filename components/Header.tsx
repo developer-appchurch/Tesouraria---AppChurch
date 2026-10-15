@@ -1,8 +1,9 @@
 'use client';
 
-import React, { useMemo, useEffect } from 'react';
-import { RotateCw, Menu } from 'lucide-react';
-import { ViewMode, LancamentoTesouraria } from '@/lib/types';
+import React, { useMemo, useEffect, useState } from 'react';
+import { RotateCw, Menu, Download } from 'lucide-react';
+import { ViewMode, LancamentoTesouraria, UnidadeCadastrada } from '@/lib/types';
+import { ExportarEnvelopesModal } from '@/components/ExportarEnvelopesModal';
 
 interface HeaderProps {
   currentView: ViewMode;
@@ -20,6 +21,10 @@ interface HeaderProps {
   onSelectSetor?: (setor: string) => void;
   setoresDisponiveis?: string[];
   onShowToast?: (msg: string) => void;
+  /** Exportação da Relação de Envelopes */
+  unidades?: UnidadeCadastrada[];
+  igrejaNome?: string | null;
+  usuarioNome?: string | null;
 }
 
 const MESES_HEADER = [
@@ -53,7 +58,11 @@ export const Header: React.FC<HeaderProps> = ({
   setoresDisponiveis = [],
   anosBase = [],
   onShowToast,
+  unidades = [],
+  igrejaNome = null,
+  usuarioNome = null,
 }) => {
+  const [exportarAberto, setExportarAberto] = useState(false);
   const anosDisponiveis = useMemo(() => {
     const anosSet = new Set<number>();
     anosBase.forEach((a) => anosSet.add(a));
@@ -246,6 +255,19 @@ export const Header: React.FC<HeaderProps> = ({
             </>
           )}
 
+          {/* Exportar (Relação de Envelopes): abre a janela com os filtros da tela já escolhidos */}
+          {currentView === 'relacao-envelopes' && (
+            <button
+              type="button"
+              onClick={() => setExportarAberto(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#252a40] hover:bg-[#313754] text-slate-200 hover:text-white border border-[#394164] text-xs font-bold transition-colors cursor-pointer"
+              title="Exportar em PDF ou Excel"
+            >
+              <Download className="w-4 h-4" />
+              <span>Exportar</span>
+            </button>
+          )}
+
           {/* Refresh Sync Button */}
           <button
             onClick={onRefresh}
@@ -257,6 +279,22 @@ export const Header: React.FC<HeaderProps> = ({
           </button>
         </div>
       </header>
+      {exportarAberto && (
+        <ExportarEnvelopesModal
+          aberto
+          onFechar={() => setExportarAberto(false)}
+          anoInicial={anoSelecionado}
+          mesInicial={mesSelecionado}
+          setorInicial={setorSelecionado}
+          anos={anosDisponiveis}
+          setores={listaSetores}
+          lancamentos={lancamentos}
+          unidades={unidades}
+          igrejaNome={igrejaNome}
+          usuarioNome={usuarioNome}
+          onShowToast={onShowToast}
+        />
+      )}
     </>
   );
 };

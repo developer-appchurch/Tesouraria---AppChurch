@@ -327,6 +327,8 @@ export interface ValorSemanaExport {
   validado: boolean;
   pix: number;
   especie: number;
+  /** Há relatório, mas ficou de fora pelo filtro de situação (validados/pendentes) */
+  filtrado?: boolean;
 }
 
 export interface LinhaEnvelopeExport {
@@ -336,10 +338,13 @@ export interface LinhaEnvelopeExport {
   semanas: ValorSemanaExport[];
 }
 
+/** Uma grade (um mês). Vários meses = várias grades no mesmo arquivo. */
 export interface DadosEnvelopes {
   cab: CabecalhoRelatorio;
   semanas: SemanaExport[];
   linhas: LinhaEnvelopeExport[];
+  /** Nome da aba no Excel (ex.: "Abril 2026") */
+  nomeAba?: string;
 }
 
 function totaisEnvelopes(linhas: LinhaEnvelopeExport[], qtdSemanas: number) {
@@ -347,31 +352,33 @@ function totaisEnvelopes(linhas: LinhaEnvelopeExport[], qtdSemanas: number) {
   let pix = 0;
   let especie = 0;
   let pendentes = 0;
+  let validados = 0;
   let semRelatorio = 0;
   for (const l of linhas) {
     l.semanas.forEach((s, i) => {
+      if (s.filtrado) return;
       if (!s.temDado) {
         semRelatorio++;
         return;
       }
-      if (!s.validado) pendentes++;
+      if (s.validado) validados++;
+      else pendentes++;
       porSemana[i].pix += s.pix;
       porSemana[i].especie += s.especie;
       pix += s.pix;
       especie += s.especie;
     });
   }
-  return { porSemana, pix, especie, total: pix + especie, pendentes, semRelatorio };
+  return { porSemana, pix, especie, total: pix + especie, pendentes, validados, semRelatorio };
 }
 
-export async function exportarEnvelopesPdf({ cab, semanas, linhas }: DadosEnvelopes) {
-  const { doc, autoTable } = await novoPdf('landscape');
+function desenharEnvelopesPdf(doc: any, autoTable: any, { cab, semanas, linhas }: DadosEnvelopes) {
   const t = totaisEnvelopes(linhas, semanas.length);
   let y = cabecalhoPdf(doc, cab);
 
   doc.setFontSize(9);
   doc.text(
-    `Total PIX: ${brl(t.pix)}   ·   Total espécie: ${brl(t.especie)}   ·   Total geral: ${brl(t.total)}   ·   Pendentes de validação: ${t.pendentes}   ·   Semanas sem relatório: ${t.semRelatorio}`,
+    `Total PIX: ${brl(t.pix)}   ·   Total espécie: ${brl(t.especie)}   ·   Total geral: ${brl(t.total)}   ·   Validados: ${t.validados}   ·   Pendentes: ${t.pendentes}`,
     12,
     y
   );
@@ -390,7 +397,7 @@ export async function exportarEnvelopesPdf({ cab, semanas, linhas }: DadosEnvelo
   const body = linhas.map((l, li) => {
     let totalCel = 0;
     const celulas = l.semanas.flatMap((s, si) => {
-      if (!s.temDado) return ['-', '-'];
+      if (!s.temDado || s.filtrado) return ['-', '-'];
       totalCel += s.pix + s.especie;
       if (!s.validado) {
         pendentesMarcados.add(`${li}:${1 + si * 2}`);
@@ -405,7 +412,7 @@ export async function exportarEnvelopesPdf({ cab, semanas, linhas }: DadosEnvelo
     startY: y,
     theme: 'grid',
     head,
-    body: body.length ? body : [['Nenhuma célula no filtro selecionado']],
+    body: body.length ? body : [[{ content: 'Nenhuma célula no filtro selecionado', colSpan: 2 + semanas.length * 2 }]],
     foot: [['Totais da semana', ...t.porSemana.flatMap((s) => [brl(s.pix), brl(s.especie)]), brl(t.total)]],
     headStyles: { fillColor: COR_ESCURA, halign: 'center', fontSize: 7.5 },
     footStyles: { fillColor: [235, 237, 244], textColor: [20, 20, 20], fontStyle: 'bold', halign: 'right', fontSize: 7.5 },
@@ -423,15 +430,24 @@ export async function exportarEnvelopesPdf({ cab, semanas, linhas }: DadosEnvelo
   y = (doc as any).lastAutoTable.finalY + 5;
   doc.setFontSize(7.5);
   doc.setTextColor(90, 90, 90);
-  doc.text('Células em vermelho: relatório lançado e ainda não validado pela tesouraria. "-": sem relatório na semana.', 8, y);
-
-  rodapePdf(doc);
-  doc.save(nomeArquivo(`envelopes ${cab.periodo}`, 'pdf'));
+  doc.text('Em vermelho: relatório lançado e ainda não validado pela tesouraria. "-": sem relatório (ou fora do filtro).', 8, y);
+  doc.setTextColor(30, 30, 30);
 }
 
-export async function exportarEnvelopesExcel({ cab, semanas, linhas }: DadosEnvelopes) {
-  const wb = await novaPlanilha();
-  const ws = wb.addWorksheet('Envelopes');
+/** PDF com uma ou mais grades (um mês por página). */
+export async function exportarEnvelopesPdf(dados: DadosEnvelopes | DadosEnvelopes[], nomeBase?: string) {
+  const grades = Array.isArray(dados) ? dados : [dados];
+  const { doc, autoTable } = await novoPdf('landscape');
+  grades.forEach((g, i) => {
+    if (i > 0) doc.addPage();
+    desenharEnvelopesPdf(doc, autoTable, g);
+  });
+  rodapePdf(doc);
+  doc.save(nomeArquivo(nomeBase || `envelopes ${grades[0]?.cab.periodo || ''}`, 'pdf'));
+}
+
+function planilhaEnvelopes(wb: any, { cab, semanas, linhas }: DadosEnvelopes, nomeAba: string) {
+  const ws = wb.addWorksheet(nomeAba);
   const qtdColunas = 3 + semanas.length * 3 + 3;
   ws.columns = [
     { width: 16 },
@@ -479,7 +495,7 @@ export async function exportarEnvelopesExcel({ cab, semanas, linhas }: DadosEnve
       const cPix = row.getCell(col);
       const cEsp = row.getCell(col + 1);
       const cSit = row.getCell(col + 2);
-      if (s.temDado) {
+      if (s.temDado && !s.filtrado) {
         cPix.value = Math.round(s.pix * 100) / 100;
         cEsp.value = Math.round(s.especie * 100) / 100;
         cSit.value = s.validado ? 'Validado' : 'Pendente';
@@ -489,7 +505,7 @@ export async function exportarEnvelopesExcel({ cab, semanas, linhas }: DadosEnve
           });
         }
       } else {
-        cSit.value = 'Sem relatório';
+        cSit.value = s.filtrado ? '-' : 'Sem relatório';
         cSit.font = { color: { argb: 'FF888888' } };
       }
       cPix.numFmt = FORMATO_BRL_EXCEL;
@@ -526,8 +542,24 @@ export async function exportarEnvelopesExcel({ cab, semanas, linhas }: DadosEnve
     tot.eachCell((c: any) => {
       c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEBEDF4' } };
     });
+  } else {
+    ws.getRow(linha).getCell(2).value = 'Nenhuma célula no filtro selecionado';
   }
   ws.views = [{ state: 'frozen', xSplit: 3, ySplit: primeiraLinhaDados - 1 }];
+}
 
-  await salvarPlanilha(wb, nomeArquivo(`envelopes ${cab.periodo}`, 'xlsx'));
+/** Excel com uma ou mais grades (uma aba por mês). */
+export async function exportarEnvelopesExcel(dados: DadosEnvelopes | DadosEnvelopes[], nomeBase?: string) {
+  const grades = Array.isArray(dados) ? dados : [dados];
+  const wb = await novaPlanilha();
+  const usados = new Set<string>();
+  grades.forEach((g, i) => {
+    // Nome de aba: até 31 caracteres, sem : \ / ? * [ ] e sem repetir
+    let nome = (g.nomeAba || g.cab.periodo || `Mês ${i + 1}`).replace(/[:\\/?*[\]]/g, '-').slice(0, 31) || `Mês ${i + 1}`;
+    let n = 2;
+    while (usados.has(nome)) nome = `${nome.slice(0, 27)} (${n++})`;
+    usados.add(nome);
+    planilhaEnvelopes(wb, g, nome);
+  });
+  await salvarPlanilha(wb, nomeArquivo(nomeBase || `envelopes ${grades[0]?.cab.periodo || ''}`, 'xlsx'));
 }
