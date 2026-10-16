@@ -3,9 +3,9 @@
 import React, { useState } from 'react';
 import { X, Download, FileText, FileSpreadsheet, Loader2 } from 'lucide-react';
 import type { LancamentoTesouraria, UnidadeCadastrada } from '@/lib/types';
-import { TreasuryService } from '@/lib/treasury-service';
-import { montarGradeEnvelopes, ehTodosSetores } from '@/lib/envelopes';
-import type { DadosEnvelopes } from '@/lib/exportar';
+import { TreasuryService, SEM_SETOR } from '@/lib/treasury-service';
+import { ehTodosSetores } from '@/lib/envelopes';
+import type { RelatorioEnvelopeExport } from '@/lib/exportar';
 
 const MESES = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
 const TODOS_SETORES = '__todos__';
@@ -24,7 +24,8 @@ interface ExportarEnvelopesModalProps {
   setores: string[];
   /** Lançamentos já carregados para o ano da tela (outro ano é buscado ao exportar) */
   lancamentos: LancamentoTesouraria[];
-  unidades: UnidadeCadastrada[];
+  /** Cadastro de células: nome dos líderes de cada célula */
+  unidades?: UnidadeCadastrada[];
   igrejaNome?: string | null;
   usuarioNome?: string | null;
   onShowToast?: (msg: string) => void;
@@ -44,7 +45,7 @@ export const ExportarEnvelopesModal: React.FC<ExportarEnvelopesModalProps> = ({
   anos,
   setores,
   lancamentos,
-  unidades,
+  unidades = [],
   igrejaNome,
   usuarioNome,
   onShowToast,
@@ -76,51 +77,63 @@ export const ExportarEnvelopesModal: React.FC<ExportarEnvelopesModalProps> = ({
         base = res.data || [];
       }
 
-      const setorFiltro = setor === TODOS_SETORES ? 'todos' : setor;
       const rotuloSetor = setor === TODOS_SETORES ? 'Todos os setores' : setor;
       const rotuloSituacao = situacao === 'todos' ? 'Validados e pendentes' : situacao === 'validados' ? 'Somente validados' : 'Somente pendentes';
-      const meses = mes === 'todos' ? mesesDoAno : [Number(mes)];
+      const mesNum = mes === 'todos' ? null : Number(mes);
+      const setorAlvo = setor === TODOS_SETORES ? null : setor.trim().toLowerCase();
 
-      const grades: DadosEnvelopes[] = meses.map((m) => {
-        const g = montarGradeEnvelopes({ lancamentos: base, unidades, ano, mes: m, setor: setorFiltro });
-        let linhas = g.celulas.map((c, ci) => ({
-          setor: c.setor,
-          celula: c.nome,
-          lider: c.lider,
-          semanas: g.valores[ci].map((v) => {
-            const ok =
-              situacao === 'todos' || (situacao === 'validados' ? v.validadoTesouraria : !v.validadoTesouraria);
-            return {
-              temDado: v.temDado,
-              validado: v.validadoTesouraria,
-              pix: Number(v.pix ?? 0),
-              especie: Number(v.dinheiro ?? 0),
-              filtrado: v.temDado && !ok,
-            };
-          }),
-        }));
-        // Com filtro de situação, só entram células com pelo menos uma semana na situação escolhida
-        if (situacao !== 'todos') linhas = linhas.filter((l) => l.semanas.some((s) => s.temDado && !s.filtrado));
-        return {
-          cab: {
-            igreja: igrejaNome || null,
-            titulo: 'Relação de Envelopes',
-            periodo: `${MESES[m - 1]} de ${ano}`,
-            filtros: `Setor: ${rotuloSetor} · ${rotuloSituacao}`,
-            geradoPor: usuarioNome || null,
-          },
-          semanas: g.semanas.map((s) => ({ num: s.num, data: s.data })),
-          linhas,
-          nomeAba: `${MESES[m - 1]} ${ano}`,
-        };
+      // Líderes da célula pelo cadastro (mesmo nome mostrado na tela)
+      const lideresPorUnidade = new Map<string, string>();
+      unidades.forEach((u) => {
+        const nomes = u.lider_nome || (u.lideres && u.lideres.length ? u.lideres.join(', ') : '');
+        if (nomes) lideresPorUnidade.set(u.id, nomes);
       });
+
+      // Lista simples: um relatório por linha, filtrado pela data do relatório, setor e situação
+      const relatorios: RelatorioEnvelopeExport[] = [];
+      for (const l of base) {
+        const data = String(l.data || '').slice(0, 10);
+        const anoRel = Number(data.slice(0, 4)) || l.ano;
+        const mesRel = Number(data.slice(5, 7)) || l.mes;
+        if (anoRel !== ano) continue;
+        if (mesNum !== null && mesRel !== mesNum) continue;
+        const setorRel = (l.Setor || l.setor || SEM_SETOR).trim();
+        if (setorAlvo !== null && setorRel.toLowerCase() !== setorAlvo) continue;
+        const validado = l.TESOURARIA_RECEB === true;
+        if (situacao === 'validados' && !validado) continue;
+        if (situacao === 'pendentes' && validado) continue;
+        relatorios.push({
+          data,
+          setor: setorRel,
+          celula: (l.Célula || l.celulaNome || '-').trim(),
+          lancadoPor:
+            (l.unidade_id && lideresPorUnidade.get(l.unidade_id)) ||
+            (l.LiderCelula && l.LiderCelula !== '-' ? l.LiderCelula : '') ||
+            '',
+          pix: Number(l.valorPix ?? l.ValorOferta ?? 0),
+          especie: Number(l.valorEspecie ?? l.OfertaEspecie ?? 0),
+          validado,
+          validadoPor: l.NomeTesoureiro || null,
+          validadoEm: l.data_recebimento || null,
+        });
+      }
+      const dados = {
+        cab: {
+          igreja: igrejaNome || null,
+          titulo: 'Relação de Envelopes',
+          periodo: mesNum === null ? `Ano de ${ano}` : `${MESES[mesNum - 1]} de ${ano}`,
+          filtros: `Setor: ${rotuloSetor} · ${rotuloSituacao}`,
+          geradoPor: usuarioNome || null,
+        },
+        relatorios,
+      };
 
       const nomeBase = `envelopes ${mes === 'todos' ? `ano ${ano}` : `${MESES[Number(mes) - 1]} ${ano}`} ${rotuloSetor}${
         situacao === 'todos' ? '' : ` ${situacao}`
       }`;
       const mod = await import('@/lib/exportar');
-      if (formato === 'pdf') await mod.exportarEnvelopesPdf(grades, nomeBase);
-      else await mod.exportarEnvelopesExcel(grades, nomeBase);
+      if (formato === 'pdf') await mod.exportarListaEnvelopesPdf(dados, nomeBase);
+      else await mod.exportarListaEnvelopesExcel(dados, nomeBase);
       onShowToast?.(`${formato === 'pdf' ? 'PDF' : 'Excel'} gerado com sucesso.`);
       onFechar();
     } catch (e: any) {
@@ -152,7 +165,7 @@ export const ExportarEnvelopesModal: React.FC<ExportarEnvelopesModalProps> = ({
         <div className="p-4 border-b border-[#262b44] flex items-center justify-between bg-[#1f243b]">
           <div>
             <h3 className="text-base font-bold text-white">Exportar Relação de Envelopes</h3>
-            <p className="text-xs text-slate-400 mt-0.5">Escolha o período, o setor e o formato</p>
+            <p className="text-xs text-slate-400 mt-0.5">Lista dos relatórios conforme os filtros escolhidos</p>
           </div>
           <button
             type="button"
@@ -243,11 +256,6 @@ export const ExportarEnvelopesModal: React.FC<ExportarEnvelopesModalProps> = ({
                 <FileSpreadsheet className="w-4 h-4 text-emerald-400" /> Excel
               </button>
             </div>
-            {mes === 'todos' && (
-              <p className="text-[11px] text-slate-400 mt-1.5">
-                Todos os meses: {formato === 'pdf' ? 'uma página por mês' : 'uma aba por mês'}.
-              </p>
-            )}
           </div>
         </div>
 

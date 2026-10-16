@@ -315,251 +315,174 @@ export async function exportarBalanceteExcel({ cab, itens, saldoGeral }: DadosBa
 }
 
 // ---------------------------------------------------------------------------
-// Relação de Envelopes (células x semanas)
+// Relação de Envelopes: lista de relatórios (um por linha) conforme os filtros
 // ---------------------------------------------------------------------------
-export interface SemanaExport {
-  num: number;
-  data: string; // dd/mm/aaaa
-}
-
-export interface ValorSemanaExport {
-  temDado: boolean;
-  validado: boolean;
-  pix: number;
-  especie: number;
-  /** Há relatório, mas ficou de fora pelo filtro de situação (validados/pendentes) */
-  filtrado?: boolean;
-}
-
-export interface LinhaEnvelopeExport {
+export interface RelatorioEnvelopeExport {
+  data: string; // YYYY-MM-DD (data do relatório)
   setor: string;
   celula: string;
-  lider: string;
-  semanas: ValorSemanaExport[];
+  lancadoPor: string;
+  pix: number;
+  especie: number;
+  validado: boolean;
+  validadoPor?: string | null;
+  validadoEm?: string | null; // ISO (data_recebimento)
 }
 
-/** Uma grade (um mês). Vários meses = várias grades no mesmo arquivo. */
-export interface DadosEnvelopes {
+export interface DadosListaEnvelopes {
   cab: CabecalhoRelatorio;
-  semanas: SemanaExport[];
-  linhas: LinhaEnvelopeExport[];
-  /** Nome da aba no Excel (ex.: "Abril 2026") */
-  nomeAba?: string;
+  relatorios: RelatorioEnvelopeExport[];
 }
 
-function totaisEnvelopes(linhas: LinhaEnvelopeExport[], qtdSemanas: number) {
-  const porSemana = Array.from({ length: qtdSemanas }, () => ({ pix: 0, especie: 0 }));
+/** Data da validação (dd/mm/aaaa), horário de Brasília; importados só com a data mantêm o dia. */
+function dataValidacaoBR(valor?: string | null): string {
+  if (!valor) return '';
+  const d = new Date(valor);
+  if (isNaN(d.getTime())) return '';
+  const soData = d.getUTCHours() === 0 && d.getUTCMinutes() === 0 && d.getUTCSeconds() === 0 && d.getUTCMilliseconds() === 0;
+  return d.toLocaleDateString('pt-BR', { timeZone: soData ? 'UTC' : 'America/Sao_Paulo' });
+}
+
+function ordenarRelatorios(lista: RelatorioEnvelopeExport[]) {
+  return [...lista].sort(
+    (a, b) =>
+      String(a.data).localeCompare(String(b.data)) ||
+      a.setor.localeCompare(b.setor) ||
+      a.celula.localeCompare(b.celula)
+  );
+}
+
+function resumoLista(lista: RelatorioEnvelopeExport[]) {
   let pix = 0;
   let especie = 0;
-  let pendentes = 0;
   let validados = 0;
-  let semRelatorio = 0;
-  for (const l of linhas) {
-    l.semanas.forEach((s, i) => {
-      if (s.filtrado) return;
-      if (!s.temDado) {
-        semRelatorio++;
-        return;
-      }
-      if (s.validado) validados++;
-      else pendentes++;
-      porSemana[i].pix += s.pix;
-      porSemana[i].especie += s.especie;
-      pix += s.pix;
-      especie += s.especie;
-    });
+  for (const r of lista) {
+    pix += r.pix;
+    especie += r.especie;
+    if (r.validado) validados++;
   }
-  return { porSemana, pix, especie, total: pix + especie, pendentes, validados, semRelatorio };
+  return { pix, especie, total: pix + especie, validados, pendentes: lista.length - validados };
 }
 
-function desenharEnvelopesPdf(doc: any, autoTable: any, { cab, semanas, linhas }: DadosEnvelopes) {
-  const t = totaisEnvelopes(linhas, semanas.length);
+export async function exportarListaEnvelopesPdf({ cab, relatorios }: DadosListaEnvelopes, nomeBase?: string) {
+  const { doc, autoTable } = await novoPdf('landscape');
+  const lista = ordenarRelatorios(relatorios);
+  const r = resumoLista(lista);
   let y = cabecalhoPdf(doc, cab);
 
   doc.setFontSize(9);
   doc.text(
-    `Total PIX: ${brl(t.pix)}   ·   Total espécie: ${brl(t.especie)}   ·   Total geral: ${brl(t.total)}   ·   Validados: ${t.validados}   ·   Pendentes: ${t.pendentes}`,
+    `Relatórios: ${lista.length}   ·   Validados: ${r.validados}   ·   Pendentes: ${r.pendentes}   ·   PIX: ${brl(r.pix)}   ·   Espécie: ${brl(r.especie)}   ·   Total: ${brl(r.total)}`,
     12,
     y
   );
   y += 4;
 
-  const head = [
-    [
-      { content: 'Célula / Líder', rowSpan: 2 },
-      ...semanas.map((s) => ({ content: `Sem. ${s.num} · ${s.data}`, colSpan: 2 })),
-      { content: 'Total da célula', rowSpan: 2 },
-    ],
-    semanas.flatMap(() => ['PIX', 'Espécie']),
-  ];
-
-  const pendentesMarcados = new Set<string>();
-  const body = linhas.map((l, li) => {
-    let totalCel = 0;
-    const celulas = l.semanas.flatMap((s, si) => {
-      if (!s.temDado || s.filtrado) return ['-', '-'];
-      totalCel += s.pix + s.especie;
-      if (!s.validado) {
-        pendentesMarcados.add(`${li}:${1 + si * 2}`);
-        pendentesMarcados.add(`${li}:${2 + si * 2}`);
-      }
-      return [brl(s.pix), brl(s.especie)];
-    });
-    return [`${l.celula}${l.setor ? ` (${l.setor})` : ''}\nLíder: ${l.lider || '-'}`, ...celulas, brl(totalCel)];
-  });
-
+  const pendentes = new Set<number>();
   autoTable(doc, {
     startY: y,
     theme: 'grid',
-    head,
-    body: body.length ? body : [[{ content: 'Nenhuma célula no filtro selecionado', colSpan: 2 + semanas.length * 2 }]],
-    foot: [['Totais da semana', ...t.porSemana.flatMap((s) => [brl(s.pix), brl(s.especie)]), brl(t.total)]],
-    headStyles: { fillColor: COR_ESCURA, halign: 'center', fontSize: 7.5 },
-    footStyles: { fillColor: [235, 237, 244], textColor: [20, 20, 20], fontStyle: 'bold', halign: 'right', fontSize: 7.5 },
-    styles: { fontSize: 7, cellPadding: 1.4 },
-    columnStyles: { 0: { cellWidth: 52, halign: 'left' } },
-    margin: { left: 8, right: 8 },
+    head: [['Data', 'Setor', 'Célula', 'Líder(es)', 'PIX', 'Espécie', 'Total', 'Situação', 'Validado por']],
+    body: lista.length
+      ? lista.map((x, i) => {
+          if (!x.validado) pendentes.add(i);
+          const quando = dataValidacaoBR(x.validadoEm);
+          return [
+            dataBR(x.data),
+            x.setor,
+            x.celula,
+            x.lancadoPor || '-',
+            brl(x.pix),
+            brl(x.especie),
+            brl(x.pix + x.especie),
+            x.validado ? 'Validado' : 'Pendente',
+            x.validado ? `${x.validadoPor || 'Tesoureiro'}${quando ? ` - ${quando}` : ''}` : '-',
+          ];
+        })
+      : [[{ content: 'Nenhum relatório nos filtros selecionados', colSpan: 9 }]],
+    foot: [['', '', '', 'Totais', brl(r.pix), brl(r.especie), brl(r.total), '', '']],
+    headStyles: { fillColor: COR_ESCURA, fontSize: 8 },
+    footStyles: { fillColor: [235, 237, 244], textColor: [20, 20, 20], fontStyle: 'bold', fontSize: 8 },
+    styles: { fontSize: 7.5, cellPadding: 1.5, overflow: 'linebreak' },
+    columnStyles: {
+      0: { cellWidth: 20 },
+      4: { halign: 'right', cellWidth: 24 },
+      5: { halign: 'right', cellWidth: 24 },
+      6: { halign: 'right', cellWidth: 26 },
+      7: { cellWidth: 20 },
+    },
+    margin: { left: 10, right: 10 },
     didParseCell: (d: any) => {
-      if (d.section === 'body' && d.column.index > 0) {
-        d.cell.styles.halign = 'right';
-        if (pendentesMarcados.has(`${d.row.index}:${d.column.index}`)) d.cell.styles.fillColor = COR_PENDENTE;
-      }
-      if (d.section === 'foot' && d.column.index === 0) d.cell.styles.halign = 'left';
+      if (d.section === 'body' && pendentes.has(d.row.index)) d.cell.styles.fillColor = COR_PENDENTE;
+      if (d.section === 'foot' && d.column.index >= 4 && d.column.index <= 6) d.cell.styles.halign = 'right';
     },
   });
-  y = (doc as any).lastAutoTable.finalY + 5;
-  doc.setFontSize(7.5);
-  doc.setTextColor(90, 90, 90);
-  doc.text('Em vermelho: relatório lançado e ainda não validado pela tesouraria. "-": sem relatório (ou fora do filtro).', 8, y);
-  doc.setTextColor(30, 30, 30);
-}
 
-/** PDF com uma ou mais grades (um mês por página). */
-export async function exportarEnvelopesPdf(dados: DadosEnvelopes | DadosEnvelopes[], nomeBase?: string) {
-  const grades = Array.isArray(dados) ? dados : [dados];
-  const { doc, autoTable } = await novoPdf('landscape');
-  grades.forEach((g, i) => {
-    if (i > 0) doc.addPage();
-    desenharEnvelopesPdf(doc, autoTable, g);
-  });
   rodapePdf(doc);
-  doc.save(nomeArquivo(nomeBase || `envelopes ${grades[0]?.cab.periodo || ''}`, 'pdf'));
+  doc.save(nomeArquivo(nomeBase || `envelopes ${cab.periodo}`, 'pdf'));
 }
 
-function planilhaEnvelopes(wb: any, { cab, semanas, linhas }: DadosEnvelopes, nomeAba: string) {
-  const ws = wb.addWorksheet(nomeAba);
-  const qtdColunas = 3 + semanas.length * 3 + 3;
+export async function exportarListaEnvelopesExcel({ cab, relatorios }: DadosListaEnvelopes, nomeBase?: string) {
+  const wb = await novaPlanilha();
+  const ws = wb.addWorksheet('Relatórios');
+  const lista = ordenarRelatorios(relatorios);
   ws.columns = [
-    { width: 16 },
+    { width: 12 },
+    { width: 18 },
     { width: 30 },
     { width: 26 },
-    ...semanas.flatMap(() => [{ width: 13 }, { width: 13 }, { width: 11 }]),
+    { width: 14 },
+    { width: 14 },
     { width: 15 },
-    { width: 15 },
-    { width: 16 },
+    { width: 12 },
+    { width: 24 },
+    { width: 14 },
   ];
-  let linha = cabecalhoExcel(ws, cab, Math.min(qtdColunas, 10));
+  let linha = cabecalhoExcel(ws, cab, 10);
+  const cabTabela = ws.getRow(linha);
+  cabTabela.values = ['Data', 'Setor', 'Célula', 'Líder(es)', 'PIX', 'Espécie', 'Total', 'Situação', 'Validado por', 'Validado em'];
+  estiloCabecalhoTabela(cabTabela);
+  const linhaCab = linha;
+  linha++;
+  const primeira = linha;
 
-  // Duas linhas de cabeçalho: semana (mesclada) e PIX/Espécie/Situação
-  const h1 = ws.getRow(linha);
-  const h2 = ws.getRow(linha + 1);
-  ['Setor', 'Célula', 'Líder'].forEach((t, i) => {
-    h1.getCell(i + 1).value = t;
-    ws.mergeCells(linha, i + 1, linha + 1, i + 1);
-  });
-  semanas.forEach((s, i) => {
-    const col = 4 + i * 3;
-    h1.getCell(col).value = `Semana ${s.num} · ${s.data}`;
-    ws.mergeCells(linha, col, linha, col + 2);
-    h2.getCell(col).value = 'PIX';
-    h2.getCell(col + 1).value = 'Espécie';
-    h2.getCell(col + 2).value = 'Situação';
-  });
-  const colTot = 4 + semanas.length * 3;
-  ['Total PIX', 'Total espécie', 'Total da célula'].forEach((t, i) => {
-    h1.getCell(colTot + i).value = t;
-    ws.mergeCells(linha, colTot + i, linha + 1, colTot + i);
-  });
-  estiloCabecalhoTabela(h1);
-  estiloCabecalhoTabela(h2);
-  linha += 2;
-  const primeiraLinhaDados = linha;
-
-  for (const l of linhas) {
+  for (const x of lista) {
     const row = ws.getRow(linha);
-    row.getCell(1).value = l.setor;
-    row.getCell(2).value = l.celula;
-    row.getCell(3).value = l.lider;
-    l.semanas.forEach((s, i) => {
-      const col = 4 + i * 3;
-      const cPix = row.getCell(col);
-      const cEsp = row.getCell(col + 1);
-      const cSit = row.getCell(col + 2);
-      if (s.temDado && !s.filtrado) {
-        cPix.value = Math.round(s.pix * 100) / 100;
-        cEsp.value = Math.round(s.especie * 100) / 100;
-        cSit.value = s.validado ? 'Validado' : 'Pendente';
-        if (!s.validado) {
-          [cPix, cEsp, cSit].forEach((c: any) => {
-            c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEDABAB' } };
-          });
-        }
-      } else {
-        cSit.value = s.filtrado ? '-' : 'Sem relatório';
-        cSit.font = { color: { argb: 'FF888888' } };
-      }
-      cPix.numFmt = FORMATO_BRL_EXCEL;
-      cEsp.numFmt = FORMATO_BRL_EXCEL;
-    });
-    // Totais por fórmula: quem editar um valor na planilha vê o total atualizar
-    const letra = (c: number) => ws.getColumn(c).letter;
-    const colsPix = semanas.map((_, i) => `${letra(4 + i * 3)}${linha}`).join(',');
-    const colsEsp = semanas.map((_, i) => `${letra(5 + i * 3)}${linha}`).join(',');
-    row.getCell(colTot).value = { formula: `SUM(${colsPix || '0'})` };
-    row.getCell(colTot + 1).value = { formula: `SUM(${colsEsp || '0'})` };
-    row.getCell(colTot + 2).value = { formula: `${letra(colTot)}${linha}+${letra(colTot + 1)}${linha}` };
-    [colTot, colTot + 1, colTot + 2].forEach((c) => (row.getCell(c).numFmt = FORMATO_BRL_EXCEL));
-    row.getCell(colTot + 2).font = { bold: true };
+    const [a, m, d] = String(x.data || '').slice(0, 10).split('-').map(Number);
+    row.getCell(1).value = a && m && d ? new Date(Date.UTC(a, m - 1, d, 12)) : null;
+    row.getCell(1).numFmt = 'dd/mm/yyyy';
+    row.getCell(2).value = x.setor;
+    row.getCell(3).value = x.celula;
+    row.getCell(4).value = x.lancadoPor || '';
+    row.getCell(5).value = Math.round(x.pix * 100) / 100;
+    row.getCell(6).value = Math.round(x.especie * 100) / 100;
+    row.getCell(7).value = { formula: `E${linha}+F${linha}` };
+    [5, 6, 7].forEach((c) => (row.getCell(c).numFmt = FORMATO_BRL_EXCEL));
+    row.getCell(8).value = x.validado ? 'Validado' : 'Pendente';
+    row.getCell(9).value = x.validado ? x.validadoPor || 'Tesoureiro' : '';
+    row.getCell(10).value = x.validado ? dataValidacaoBR(x.validadoEm) : '';
+    if (!x.validado) {
+      row.eachCell({ includeEmpty: true }, (c: any) => {
+        c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEDABAB' } };
+      });
+    }
     linha++;
   }
 
-  if (linhas.length) {
+  if (lista.length) {
     const tot = ws.getRow(linha);
-    tot.getCell(2).value = 'Totais';
-    const ultima = linha - 1;
-    const somaCol = (c: number) => ({ formula: `SUM(${ws.getColumn(c).letter}${primeiraLinhaDados}:${ws.getColumn(c).letter}${ultima})` });
-    semanas.forEach((_, i) => {
-      tot.getCell(4 + i * 3).value = somaCol(4 + i * 3);
-      tot.getCell(5 + i * 3).value = somaCol(5 + i * 3);
-      tot.getCell(4 + i * 3).numFmt = FORMATO_BRL_EXCEL;
-      tot.getCell(5 + i * 3).numFmt = FORMATO_BRL_EXCEL;
-    });
-    [colTot, colTot + 1, colTot + 2].forEach((c) => {
-      tot.getCell(c).value = somaCol(c);
+    tot.getCell(4).value = 'Totais';
+    [5, 6, 7].forEach((c) => {
+      const col = ws.getColumn(c).letter;
+      tot.getCell(c).value = { formula: `SUM(${col}${primeira}:${col}${linha - 1})` };
       tot.getCell(c).numFmt = FORMATO_BRL_EXCEL;
     });
     tot.font = { bold: true };
-    tot.eachCell((c: any) => {
-      c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEBEDF4' } };
-    });
+    ws.autoFilter = { from: { row: linhaCab, column: 1 }, to: { row: linha - 1, column: 10 } };
   } else {
-    ws.getRow(linha).getCell(2).value = 'Nenhuma célula no filtro selecionado';
+    ws.getRow(linha).getCell(1).value = 'Nenhum relatório nos filtros selecionados';
   }
-  ws.views = [{ state: 'frozen', xSplit: 3, ySplit: primeiraLinhaDados - 1 }];
-}
+  ws.views = [{ state: 'frozen', ySplit: linhaCab }];
 
-/** Excel com uma ou mais grades (uma aba por mês). */
-export async function exportarEnvelopesExcel(dados: DadosEnvelopes | DadosEnvelopes[], nomeBase?: string) {
-  const grades = Array.isArray(dados) ? dados : [dados];
-  const wb = await novaPlanilha();
-  const usados = new Set<string>();
-  grades.forEach((g, i) => {
-    // Nome de aba: até 31 caracteres, sem : \ / ? * [ ] e sem repetir
-    let nome = (g.nomeAba || g.cab.periodo || `Mês ${i + 1}`).replace(/[:\\/?*[\]]/g, '-').slice(0, 31) || `Mês ${i + 1}`;
-    let n = 2;
-    while (usados.has(nome)) nome = `${nome.slice(0, 27)} (${n++})`;
-    usados.add(nome);
-    planilhaEnvelopes(wb, g, nome);
-  });
-  await salvarPlanilha(wb, nomeArquivo(nomeBase || `envelopes ${grades[0]?.cab.periodo || ''}`, 'xlsx'));
+  await salvarPlanilha(wb, nomeArquivo(nomeBase || `envelopes ${cab.periodo}`, 'xlsx'));
 }
